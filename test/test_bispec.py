@@ -108,8 +108,8 @@ fig.tight_layout()
 fig.savefig("plots/test_bispec.png", dpi=300)
 
 
-def bk_model(tr, tr2,tr3,tr4, kp, pk, cosm_par, redshift, fi_vals, num_points = 50):
-    bk0, bk200, bk020, bk002 = bk_multip(tr, tr2,tr3,tr4, kp, pk, cosm_par, redshift, num_points = 50, fi_vals = fi_vals)
+def bk_model(tr, tr2,tr3,tr4, kp, pk, cosm_par, redshift, fi_vals, num_points = 20):
+    bk0, bk200, bk020, bk002 = bk_multip(tr, tr2,tr3,tr4, kp, pk, cosm_par, redshift, num_points = num_points, fi_vals = fi_vals)
     A_B = cosm_par[8]/(cosm_par[2]*cosm_par[3]*cosm_par[3])**2
     bk0 += (A_B-1.)*sn0
     bk200 += (A_B-1.)*sn200
@@ -124,13 +124,20 @@ def likelihood(cosm_par, geo_params):
 
 bk_grad = jax.jacfwd(bk_model, argnums = (6,))
 from geofptax.constants import F_VALS_FULL
-dbk0, dbk200, dbk020 = bk_grad(tr0,tr0,tr020,tr020,kp,nlmpk,cosm_par,redshift=0.5, num_points = num_points, fi_vals = F_VALS_FULL)
 
-
-print(dbk0)
 
 dlike = jax.grad(likelihood, argnums = (0,1))
 
-print(dlike(cosm_par, F_VALS_FULL))
+print("Test derivatives of likelihood", dlike(cosm_par, F_VALS_FULL))
+
+
+vec_likelihood = jax.jit(jax.vmap(likelihood, in_axes = (0, None)))
+
+many_pars = jnp.stack([cosm_par]*10)
+print(many_pars.shape)
+print("Original like", likelihood(cosm_par, F_VALS_FULL))
+print("Vector like", vec_likelihood(many_pars, F_VALS_FULL))
+
+
 
 
