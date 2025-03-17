@@ -7,7 +7,7 @@ import numpy as np
 import os, sys, glob, subprocess
 
 
-do_ext = os.environ.get('GEOFPT_CEXT') is not None
+do_ext = os.environ.get('GEOFPT_CEXT') == '1'
 
 
 if do_ext:
