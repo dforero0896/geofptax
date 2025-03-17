@@ -134,6 +134,7 @@ print("Test derivatives of likelihood", dlike(cosm_par, F_VALS_FULL))
 vec_likelihood = jax.jit(jax.vmap(likelihood, in_axes = (0, None)))
 
 many_pars = jnp.stack([cosm_par]*10)
+many_pars = many_pars.at[:,2:4].add(0.1 * jax.random.normal(jax.random.PRNGKey(0), shape = (10,2)))
 print(many_pars.shape)
 print("Original like", likelihood(cosm_par, F_VALS_FULL))
 print("Vector like", vec_likelihood(many_pars, F_VALS_FULL))

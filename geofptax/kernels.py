@@ -48,26 +48,139 @@ def integrate_2d(f, xmin, xmax, ymin, ymax, args = ()):
     
     
 def cosab(ka, kb, kc):
+    """
+    Compute the cosine of the angle between vectors ka and kb using the law of cosines.
+
+    Parameters
+    ----------
+    ka : float or jnp.ndarray
+        Magnitude of the first vector.
+    kb : float or jnp.ndarray
+        Magnitude of the second vector.
+    kc : float or jnp.ndarray
+        Magnitude of the third vector (resultant of ka and kb).
+
+    Returns
+    -------
+    float or jnp.ndarray
+        Cosine of the angle between vectors ka and kb.
+    """
     return (kc * kc - ka * ka - kb * kb) / (2 * ka * kb)
 
 def f2_ker(ka, kb, kc):
-    cab = cosab(ka, kb, kc)
-    return 5./7. + 0.5 * cab * (ka / kb + kb / ka) + 2./7. * cab**2
+    """
+    Compute the second-order SPT kernel F2.
 
-def interpol_ker(a, fi_a_val, a_val = jnp.array([1. / (1 + 2.), 1. / (1 + 1.), 1. / (1 + 0.5)])):
+    Parameters
+    ----------
+    ka : float or jnp.ndarray
+        Magnitude of the first wavevector.
+    kb : float or jnp.ndarray
+        Magnitude of the second wavevector.
+    kc : float or jnp.ndarray
+        Magnitude of the resultant wavevector.
+
+    Returns
+    -------
+    float or jnp.ndarray
+        Value of the F2 kernel.
+    """
+    cab = cosab(ka, kb, kc)
+    return 5. / 7. + 0.5 * cab * (ka / kb + kb / ka) + 2. / 7. * cab**2
+
+def interpol_ker(a, fi_a_val, a_val=jnp.array([1. / (1 + 2.), 1. / (1 + 1.), 1. / (1 + 0.5)])):
+    """
+    Interpolate the kernel values at a given scale factor.
+
+    Parameters
+    ----------
+    a : float
+        Scale factor at which to interpolate.
+    fi_a_val : jnp.ndarray
+        Array of kernel values at predefined scale factors.
+    a_val : jnp.ndarray, optional
+        Predefined scale factors for interpolation. Default is [1/3, 1/2, 2/3].
+
+    Returns
+    -------
+    jnp.ndarray
+        Interpolated kernel values at the given scale factor.
+    """
     return jnp.interp(a, a_val, fi_a_val)
+
 interpol_ker = jax.vmap(interpol_ker, in_axes = (None, 0))
 
 def g2_ker(ka, kb, kc):
+    """
+    Compute the second-order SPT kernel G2.
+
+    Parameters
+    ----------
+    ka : float or jnp.ndarray
+        Magnitude of the first wavevector.
+    kb : float or jnp.ndarray
+        Magnitude of the second wavevector.
+    kc : float or jnp.ndarray
+        Magnitude of the resultant wavevector.
+
+    Returns
+    -------
+    float or jnp.ndarray
+        Value of the G2 kernel.
+    """
     cab = cosab(ka, kb, kc)
     return 3. / 7. + 0.5 * cab * (ka / kb + kb / ka) + 4. / 7. * cab**2
 
-# Redshift-space SPT kernel Z1
 def z1_ker(mu, cosm_par):
+    """
+    Compute the first-order redshift-space SPT kernel Z1.
+
+    Parameters
+    ----------
+    mu : float or jnp.ndarray
+        Cosine of the angle between the wavevector and the line of sight.
+    cosm_par : jnp.ndarray
+        Cosmological parameters array, where cosm_par[4] is the linear bias (b1)
+        and cosm_par[1] is the growth rate (f).
+
+    Returns
+    -------
+    float or jnp.ndarray
+        Value of the Z1 kernel.
+    """
     b1, ff = cosm_par[4], cosm_par[1]
     return b1 + ff * mu**2
-# Redshift-space SPT kernel Z2
+
+
 def z2_ker(ka, kb, kc, fkern, gkern, mua, mub, cosm_par):
+    """
+    Compute the second-order redshift-space SPT kernel Z2.
+
+    Parameters
+    ----------
+    ka : float or jnp.ndarray
+        Magnitude of the first wavevector.
+    kb : float or jnp.ndarray
+        Magnitude of the second wavevector.
+    kc : float or jnp.ndarray
+        Magnitude of the resultant wavevector.
+    fkern : float or jnp.ndarray
+        F2 kernel value.
+    gkern : float or jnp.ndarray
+        G2 kernel value.
+    mua : float or jnp.ndarray
+        Cosine of the angle between ka and the line of sight.
+    mub : float or jnp.ndarray
+        Cosine of the angle between kb and the line of sight.
+    cosm_par : jnp.ndarray
+        Cosmological parameters array, where cosm_par[4] is the linear bias (b1),
+        cosm_par[1] is the growth rate (f), and cosm_par[5] is the second-order bias (b2).
+
+    Returns
+    -------
+    float or jnp.ndarray
+        Value of the Z2 kernel.
+    """
     cab = cosab(ka, kb, kc)
     b1, ff, b2 = cosm_par[4], cosm_par[1], cosm_par[5]
 
@@ -82,8 +195,31 @@ def z2_ker(ka, kb, kc, fkern, gkern, mua, mub, cosm_par):
     b_terms = 0.5 * (b2 + bs * s2)
 
     return b1_terms + g_term + fsq_term + b_terms
-# GEO-FPT factor multiplying Z2_SPT to obtain Z2_GEO
+
+
+
 def geo_fac(ka, kb, kc, af, hh):
+    """
+    Compute the GEO-FPT factor multiplying Z2_SPT to obtain Z2_GEO.
+
+    Parameters
+    ----------
+    ka : float or jnp.ndarray
+        Magnitude of the first wavevector.
+    kb : float or jnp.ndarray
+        Magnitude of the second wavevector.
+    kc : float or jnp.ndarray
+        Magnitude of the resultant wavevector.
+    af : jnp.ndarray
+        Array of coefficients for the GEO-FPT factor.
+    hh : float
+        Hubble parameter (normalization factor).
+
+    Returns
+    -------
+    float or jnp.ndarray
+        Value of the GEO-FPT factor.
+    """
     # Determine kmax, kmed, kmin
     k = jnp.array([ka, kb, kc])
     kmax = jnp.max(k)
@@ -105,7 +241,6 @@ def geo_fac(ka, kb, kc, af, hh):
     return extra
 
 
-# To check
 # Vectorized versions of the functions
 g2_ker_vec = jax.vmap(g2_ker, (0, 0, 0))
 z1_ker_vec = jax.vmap(z1_ker, (0, None))
@@ -115,6 +250,37 @@ geo_fac_vec = jax.vmap(geo_fac, (0, 0, 0, None, None))
 
 @jax.jit
 def bkeff_r_scalar(mua_m, phi, tr, cosm_par, pk_in, sig_fog, log_km, log_pkm, af, mp):
+    """
+    Compute the integrand for the effective bispectrum in redshift space.
+
+    Parameters
+    ----------
+    mua_m : float or jnp.ndarray
+        Cosine of the angle between ka and the line of sight in real space.
+    phi : float or jnp.ndarray
+        Azimuthal angle.
+    tr : tuple or jnp.ndarray
+        Triangle side lengths (ka_m, kb_m, kc_m) in real space.
+    cosm_par : jnp.ndarray
+        Cosmological parameters array.
+    pk_in : tuple or jnp.ndarray
+        Power spectrum values at ka_m, kb_m, kc_m.
+    sig_fog : float
+        Finger-of-God damping factor.
+    log_km : jnp.ndarray
+        Logarithm of wavevector magnitudes for interpolation.
+    log_pkm : jnp.ndarray
+        Logarithm of power spectrum values for interpolation.
+    af : jnp.ndarray
+        Array of coefficients for the GEO-FPT factor.
+    mp : int
+        Multipole index (0 for monopole, 1 for quadrupole, etc.).
+
+    Returns
+    -------
+    float or jnp.ndarray
+        Value of the integrand.
+    """
     ka_m, kb_m, kc_m = tr
     pka, pkb, pkc = pk_in
     spline_me = lambda logk: jnp.interp(logk, log_km, log_pkm)
@@ -182,8 +348,40 @@ def bkeff_r_scalar(mua_m, phi, tr, cosm_par, pk_in, sig_fog, log_km, log_pkm, af
 bkeff_r_vmap = jax.vmap(bkeff_r_scalar, in_axes=(0, 0, None, None, None, None, None, None, None, None))
 
 
-
 def integrate_bkeff_r(tr, cosm_par, pk_in, sig_fog, log_km, log_pkm, af, mp, xmin, xmax, num_points):
+    """
+    Perform 2D integration of the effective bispectrum integrand.
+
+    Parameters
+    ----------
+    tr : tuple or jnp.ndarray
+        Triangle side lengths (ka_m, kb_m, kc_m) in real space.
+    cosm_par : jnp.ndarray
+        Cosmological parameters array.
+    pk_in : tuple or jnp.ndarray
+        Power spectrum values at ka_m, kb_m, kc_m.
+    sig_fog : float
+        Finger-of-God damping factor.
+    log_km : jnp.ndarray
+        Logarithm of wavevector magnitudes for interpolation.
+    log_pkm : jnp.ndarray
+        Logarithm of power spectrum values for interpolation.
+    af : jnp.ndarray
+        Array of coefficients for the GEO-FPT factor.
+    mp : int
+        Multipole index (0 for monopole, 1 for quadrupole, etc.).
+    xmin : tuple
+        Lower bounds of integration (mua_min, phi_min).
+    xmax : tuple
+        Upper bounds of integration (mua_max, phi_max).
+    num_points : int
+        Number of points for the integration grid.
+
+    Returns
+    -------
+    float
+        Result of the 2D integration.
+    """
     mua_grid = jnp.linspace(xmin[0], xmax[0], num_points)
     phi_grid = jnp.linspace(xmin[1], xmax[1], num_points)
     mua_mesh, phi_mesh = jnp.meshgrid(mua_grid, phi_grid, indexing='ij')
@@ -197,65 +395,118 @@ def integrate_bkeff_r(tr, cosm_par, pk_in, sig_fog, log_km, log_pkm, af, mp, xmi
     integral = jnp.trapz(jnp.trapz(integrand_values, phi_grid, axis=1), mua_grid)
     return integral
 
+
 vec_integrate_bkeff_r = jax.jit(jax.vmap(integrate_bkeff_r, in_axes = (0, None, 0, None, None, None, None, None, None, None, None)), static_argnames = ('num_points',))
 vec_integrate = jax.jit(jax.vmap(integrate_2d, in_axes = (None, None, None, None, None, (0, None, 0, None, None, None, None, None))), static_argnames = ('f',))
-# Main function (JIT-compatible)
-#@jax.jit
-def ext_bk_mp(tr, tr2, tr3, tr4, log_km, log_pkm, cosm_par, redshift, fi_vals = F_VALS_FULL, num_points = 50):
+
+
+
+def ext_bk_mp(tr, tr2, tr3, tr4, log_km, log_pkm, cosm_par, redshift, fi_vals=F_VALS_FULL, num_points=50):
+    """
+    Compute the effective bispectrum multipoles for a given set of triangles and cosmological parameters.
+
+    Parameters
+    ----------
+    tr : jnp.ndarray
+        Array of triangle side lengths (ka, kb, kc) for the monopole calculation.
+    tr2 : jnp.ndarray
+        Array of triangle side lengths (ka, kb, kc) for the first multipole calculation.
+    tr3 : jnp.ndarray
+        Array of triangle side lengths (ka, kb, kc) for the second multipole calculation.
+    tr4 : jnp.ndarray
+        Array of triangle side lengths (ka, kb, kc) for the third multipole calculation.
+    log_km : jnp.ndarray
+        Logarithm of wavevector magnitudes for interpolation.
+    log_pkm : jnp.ndarray
+        Logarithm of power spectrum values for interpolation.
+    cosm_par : jnp.ndarray
+        Cosmological parameters array.
+    redshift : float
+        Redshift at which to compute the bispectrum.
+    fi_vals : jnp.ndarray, optional
+        Array of kernel values for interpolation. Default is F_VALS_FULL.
+    num_points : int, optional
+        Number of points for the integration grid. Default is 50.
+
+    Returns
+    -------
+    tuple
+        A tuple containing the bispectrum monopole (bk0), first multipole (bk200),
+        second multipole (bk020), and third multipole (bk002).
+    """
     a_t = 1.0 / (1.0 + redshift)
 
-    
+    # Interpolate the kernel values
     af = interpol_ker(a_t, fi_vals)
-    
 
+    # Define the interpolation function for the power spectrum
     spline_me = lambda logk: jnp.interp(logk, log_km, log_pkm)
-    #spline_me = jc.scipy.interpolate.InterpolatedUnivariateSpline(log_km, log_pkm, k = 3)
 
+    # Finger-of-God damping factor
     sig_fog = cosm_par[9]
+
+    # Integration limits
     xmin = [-1.0, 0.0]
     xmax = [1.0, 2 * jnp.pi]
-    pk_in = 10**spline_me(jnp.log10(tr))  
-    
 
-    #print(dblquad(lambda y, x, *args : bkeff_r_scalar(x, y, *args), xmin[0], xmax[0], xmin[1], xmax[1], args = (tr[0], cosm_par, pk_in[0], sig_fog, log_km, log_pkm, af, 1))[0])
-    #print(integrate_2d(bkeff_r_scalar, xmin[0], xmax[0], xmin[1], xmax[1], args = (tr[0], cosm_par, pk_in[0], sig_fog, log_km, log_pkm, af, 1)))
-    #print(integrate_bkeff_r(tr[0,:], cosm_par, pk_in[0,:], sig_fog, log_km, log_pkm, af, 1, xmin, xmax, num_points))
-    
- #   vec_integrate_bkeff_r = jax.jit(jax.vmap(integrate_bkeff_r, 
- #                                    in_axes = (0, None, 0, None, None, None, None, None, None, None), ))
- #                                    #axis_size = (tr.shape[0], None, tr.shape[0], None, None, None, None, None, None, None)), static_argnames = ('num_points',))
-    #def integrate_wrapper(tr, pk_in, cosm_par, sig_fog, mp):
-    #    return integrate_2d(bkeff_r_scalar, xmin[0], xmax[0], xmin[1], xmax[1], args = (tr, cosm_par, pk_in, sig_fog, log_km, log_pkm, af, mp))
-    
-    
-    #print(vec_integrate_bkeff_r(tr, cosm_par, pk_in, sig_fog, log_km, log_pkm, af, 1, xmin, xmax, num_points)[0])
-    #print(vec_integrate(bkeff_r_scalar, xmin[0], xmax[0], xmin[1], xmax[1], (tr, cosm_par, pk_in, sig_fog, log_km, log_pkm, af, 1))[0])
-
-    
-    
+    # Compute the bispectrum monopole
     pk_in = 10**spline_me(jnp.log10(tr))
     bk0 = vec_integrate_bkeff_r(tr, cosm_par, pk_in, sig_fog, log_km, log_pkm, af, 0, xmin, xmax, num_points)
+
+    # Compute the first multipole
     pk_in = 10**spline_me(jnp.log10(tr2))
     bk200 = vec_integrate_bkeff_r(tr2, cosm_par, pk_in, sig_fog, log_km, log_pkm, af, 1, xmin, xmax, num_points)
 
+    # Compute the second multipole
     pk_in = 10**spline_me(jnp.log10(tr3))
     bk020 = vec_integrate_bkeff_r(tr3, cosm_par, pk_in, sig_fog, log_km, log_pkm, af, 2, xmin, xmax, num_points)
 
+    # Compute the third multipole
     pk_in = 10**spline_me(jnp.log10(tr4))
     bk002 = vec_integrate_bkeff_r(tr4, cosm_par, pk_in, sig_fog, log_km, log_pkm, af, 3, xmin, xmax, num_points)
-    
-    
-    
 
-    return bk0,bk200,bk020,bk002
+    return bk0, bk200, bk020, bk002
 
-@partial(jax.jit, static_argnames = ('num_points',))
-def bk_multip(tr, tr2,tr3,tr4, kp, pk, cosm_par, redshift, num_points = 50, fi_vals = F_VALS_FULL):
-    
-    
-    bk0, bk200, bk020, bk002 = ext_bk_mp(tr, tr2, tr3, tr4, jnp.log10(kp), jnp.log10(pk), 
-                   cosm_par, redshift, num_points= num_points, fi_vals = fi_vals)
-    
-    return  bk0, bk200, bk020, bk002
+
+@partial(jax.jit, static_argnames=('num_points',))
+def bk_multip(tr, tr2, tr3, tr4, kp, pk, cosm_par, redshift, num_points=50, fi_vals=F_VALS_FULL):
+    """
+    Compute the bispectrum multipoles for a given set of triangles, power spectrum, and cosmological parameters.
+
+    Parameters
+    ----------
+    tr : jnp.ndarray
+        Array of triangle side lengths (ka, kb, kc) for the monopole calculation.
+    tr2 : jnp.ndarray
+        Array of triangle side lengths (ka, kb, kc) for the first multipole calculation.
+    tr3 : jnp.ndarray
+        Array of triangle side lengths (ka, kb, kc) for the second multipole calculation.
+    tr4 : jnp.ndarray
+        Array of triangle side lengths (ka, kb, kc) for the third multipole calculation.
+    kp : jnp.ndarray
+        Array of wavevector magnitudes for the power spectrum.
+    pk : jnp.ndarray
+        Array of power spectrum values corresponding to kp.
+    cosm_par : jnp.ndarray
+        Cosmological parameters array.
+    redshift : float
+        Redshift at which to compute the bispectrum.
+    num_points : int, optional
+        Number of points for the integration grid. Default is 50.
+    fi_vals : jnp.ndarray, optional
+        Array of kernel values for interpolation. Default is F_VALS_FULL.
+
+    Returns
+    -------
+    tuple
+        A tuple containing the bispectrum monopole (bk0), first multipole (bk200),
+        second multipole (bk020), and third multipole (bk002).
+    """
+    # Compute the bispectrum multipoles
+    bk0, bk200, bk020, bk002 = ext_bk_mp(
+        tr, tr2, tr3, tr4, jnp.log10(kp), jnp.log10(pk), cosm_par, redshift, num_points=num_points, fi_vals=fi_vals
+    )
+
+    return bk0, bk200, bk020, bk002
 
 
