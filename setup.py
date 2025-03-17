@@ -11,6 +11,7 @@ do_ext = os.environ.get('GEOFPT_CEXT') == '1'
 
 
 if do_ext:
+    print("Compiling C version of Geo-FPT too.", flush=True)
     gsl_includes = [f.replace("\n", "") for f in subprocess.run(['gsl-config', '--cflags'], stdout=subprocess.PIPE).stdout.decode('utf-8').split(" ")]
 
     gsl_libs = [f.replace("\n", "") for f in subprocess.run(['gsl-config', '--libs'], stdout=subprocess.PIPE).stdout.decode('utf-8').split(" ")]
@@ -30,7 +31,8 @@ if do_ext:
             extra_link_args=['-fopenmp', f"-L{os.environ.get('FFTW_DIR')}", '-lfftw3_omp'] + gsl_libs,
         )
     ]
-
+else:
+    print("NOT Compiling C version of Geo-FPT too.", flush=True)
 
 setup(
     name="geofptax",
