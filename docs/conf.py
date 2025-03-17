@@ -9,9 +9,11 @@ release = '0.0.0'
 
 # Extensions
 extensions = [
-    'sphinx.ext.autodoc',  # Automatically document modules
-    'sphinx.ext.napoleon',  # Support for NumPy and Google docstrings
-    'sphinx.ext.viewcode',  # Add links to source code
+    'sphinx.ext.autodoc',
+    'sphinx.ext.intersphinx',
+    'sphinx.ext.extlinks',
+    'sphinx.ext.napoleon',
+    'sphinx_rtd_theme',
 ]
 
 # HTML theme
