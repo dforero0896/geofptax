@@ -1,9 +1,6 @@
 import jax
 import jax.numpy as jnp
-import jax_cosmo as jc
-from scipy.integrate import dblquad
 from quadax import quadgk
-import numba
 import numpy as np
 from functools import partial
 from .constants import *

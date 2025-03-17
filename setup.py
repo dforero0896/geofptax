@@ -39,5 +39,5 @@ setup(
     author = "Daniel Forero",
     ext_modules=cythonize(extensions, annotate = False) if do_ext else None,
     packages = find_packages(exclude = ['examples', 'tests']),
-    install_requires = ['numpy', 'jax', 'jaxlib', 'jax-cosmo']
+    install_requires = ['numpy', 'jax', 'jaxlib', 'quadax']
 )
