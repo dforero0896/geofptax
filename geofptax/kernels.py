@@ -1,6 +1,6 @@
 import jax
 import jax.numpy as jnp
-from quadax import quadgk
+#from quadax import quadgk
 import numpy as np
 from functools import partial
 from .constants import *
