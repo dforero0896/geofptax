@@ -1,9 +1,9 @@
 Welcome to GeoFPTax's documentation!
 ===================================
 
-While this package is focused on the JAX implementation of the Geo-FPT <https://arxiv.org/pdf/2303.15510v1> code, it also includes 
-the original ``C`` implementation <https://github.com/serginovell/Geo-FPT/tree/main> for testing purposes. The caveat being that the
-JAX implementation resorts to 2 1D trapezoidal ruule integrations instead of the quadrature used in the C code, this makes the result
+While this package is focused on the JAX implementation of the `Geo-FPT <https://arxiv.org/pdf/2303.15510v1>` code, it also includes 
+the original ``C`` `implementation <https://github.com/serginovell/Geo-FPT/tree/main>` for testing purposes. The caveat being that the
+JAX implementation resorts to 2 1D trapezoidal rule integrations instead of the quadrature used in the C code, this makes the result
 slightly dependent on the number of points used to evaluate the kernel before the integrations. From the tests, 50 points seem to 
 yield a good tradeoff between speed and acuracy, but if only the monopole is used, 10 points seem to be enough. 
 
