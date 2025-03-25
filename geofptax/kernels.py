@@ -389,7 +389,7 @@ def integrate_bkeff_r(tr, cosm_par, pk_in, sig_fog, log_km, log_pkm, af, mp, xmi
 
     # Reshape and integrate using trapezoidal rule
     integrand_values = integrand_values.reshape(mua_mesh.shape)
-    integral = jnp.trapz(jnp.trapz(integrand_values, phi_grid, axis=1), mua_grid)
+    integral = jnp.trapezoid(jnp.trapezoid(integrand_values, phi_grid, axis=1), mua_grid)
     return integral
 
 
