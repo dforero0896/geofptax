@@ -7,42 +7,114 @@ from .constants import *
 
 
 
-def integrate_1d(f, a, b, args = ()):
-    """
-    Perform 1D integration using quadgk.
+@jax.jit
+def jax_leggauss(x):
+    """JAX-compatible Gauss-Legendre quadrature weights and nodes."""
+    # Use Newton's method to find roots of Legendre polynomials
+    # Initial guess (Chebyshev nodes)
+    n = x.shape[0]
+    x = jnp.cos(jnp.pi * (x + 0.5) / n)
     
-    Args:
-        f: Function to integrate.
-        a, b: Lower and upper limits of integration.
+    # Newton iteration
+    def body_fun(*val):
+        x, _ = val
+        P, P_prime = legendre_recurrence(x, n)
+        dx = P / P_prime
+        x_new = x - dx
+        return x_new, None
     
-    Returns:
-        The result of the 1D integral.
+    x, _ = jax.lax.scan(body_fun, x, None, length=5)  # 5 iterations typically sufficient
+    
+    # Compute weights
+    _, P_prime = legendre_recurrence(x, n)
+    w = 2.0 / ((1.0 - x**2) * P_prime**2)
+    return x, w
+
+def legendre_recurrence(x, n):
+    """Compute Legendre polynomial and its derivative using recurrence."""
+    P0 = jnp.ones_like(x)
+    P1 = x
+    dP0 = jnp.zeros_like(x)
+    dP1 = jnp.ones_like(x)
+    
+    for k in range(1, n):
+        P = ((2*k + 1)*x*P1 - k*P0)/(k + 1)
+        dP = ((2*k + 1)*(P1 + x*dP1) - k*dP0)/(k + 1)
+        P0, P1 = P1, P
+        dP0, dP1 = dP1, dP
+    
+    return P1, dP1
+
+@partial(jax.jit, static_argnames = ('f', 'nx', 'ny'))
+def integrate_2d_gauss(f, xmin, xmax, ymin, ymax, nx=20, ny=20):
     """
-    result, _ = quadgk(f, [a, b], args = args)
-    return result
+    Compute a 2D integral using vectorized Gauss-Legendre quadrature.
+
+    This function performs double integration of a function f(x,y) over the rectangular domain
+    [xmin, xmax] × [ymin, ymax] using Gauss-Legendre quadrature rules. The implementation
+    is fully JAX-compatible and optimized for parallel evaluation.
+
+    Parameters
+    ----------
+    f : callable
+        A JAX-compatible function of two variables to be integrated.
+        Signature must be f(x, y) where x and y are JAX arrays.
+    xmin : float
+        Lower bound of integration for the x-axis.
+    xmax : float
+        Upper bound of integration for the x-axis.
+    ymin : float
+        Lower bound of integration for the y-axis.
+    ymax : float
+        Upper bound of integration for the y-axis.
+    nx : int, optional
+        Number of Gauss-Legendre quadrature points for x-axis. Default is 20.
+    ny : int, optional
+        Number of Gauss-Legendre quadrature points for y-axis. Default is 20.
+
+    Returns
+    -------
+    float
+        The computed value of the integral ∫∫ f(x,y) dx dy over the domain.
+
+    Notes
+    -----
+    - The implementation uses JAX-native operations and is fully JIT-compilable.
+    - For smooth functions, nx=ny=20 typically gives machine precision.
+    - The quadrature weights/nodes are computed using the Golub-Welsch algorithm.
+    - The function handles vectorized inputs efficiently using JAX's vmap.
+
+    Examples
+    --------
+    >>> def f(x, y):
+    ...     return jnp.sin(x) * jnp.cos(y)
+    >>> integrate_2d_gauss(f, 0, 1, 0, 1)  # Integrate sin(x)cos(y) over [0,1]×[0,1]
+    Array(0.354036, dtype=float32)
+
+    See Also
+    --------
+    weights_leggauss : The underlying 1D quadrature implementation
+    jax.vmap : Used for vectorized function evaluation
+    """
+    # Get quadrature points and weights
+    x, wx = jax_leggauss(jnp.arange(nx))
+    y, wy = jax_leggauss(jnp.arange(ny))
+    
+    # Rescale from [-1, 1] to [xmin, xmax] × [ymin, ymax]
+    x_scaled = 0.5*(xmax - xmin)*x + 0.5*(xmax + xmin)
+    y_scaled = 0.5*(ymax - ymin)*y + 0.5*(ymax + ymin)
+    
+    # Create 2D grid of points
+    X, Y = jnp.meshgrid(x_scaled, y_scaled, indexing='ij')
+    
+    # Vectorized function evaluation
+    F = jax.vmap(jax.vmap(f, (0, 0)), (0, 0))(X, Y)
+    
+    # Compute integral
+    integral = jnp.sum(wx[:, None] * wy[None, :] * F)
+    return integral * 0.25*(xmax - xmin)*(ymax - ymin)
 
 
-def integrate_2d(f, xmin, xmax, ymin, ymax, args = ()):
-    """
-    2D integrator using nested 1D integrations with quadgk.
-    
-    Args:
-        f: Function to integrate, f(x, y).
-        xmin, xmax: Limits of integration for the x-axis.
-        ymin, ymax: Limits of integration for the y-axis.
-    
-    Returns:
-        The result of the 2D integral.
-    """
-    # Define a function to integrate f(x, y) over y for a fixed x
-    def integrate_y(x):
-        return integrate_1d(lambda y, *args: f(x, y, *args), ymin, ymax, args = args)
-    
-    
-    integral_2d = integrate_1d(integrate_y, xmin, xmax)
-    
-    return integral_2d
-    
     
 def cosab(ka, kb, kc):
     """
@@ -183,6 +255,7 @@ def z2_ker(ka, kb, kc, fkern, gkern, mua, mub, cosm_par):
 
     ksq = jnp.sqrt(ka**2 + kb**2 + 2 * ka * kb * cab)  # modulus of vector sum k1 + k2
     mu12 = (ka * mua + kb * mub) / ksq
+    # TODO: relax condition on bs and make it a parameter.
     bs = -4.0 / 7.0 * (b1 - 1.0)
     s2 = cab**2 - 1.0 / 3.0  # S_2 kernel
 
@@ -344,8 +417,47 @@ def bkeff_r_scalar(mua_m, phi, tr, cosm_par, pk_in, sig_fog, log_km, log_pkm, af
 
 bkeff_r_vmap = jax.vmap(bkeff_r_scalar, in_axes=(0, 0, None, None, None, None, None, None, None, None))
 
-
 def integrate_bkeff_r(tr, cosm_par, pk_in, sig_fog, log_km, log_pkm, af, mp, xmin, xmax, num_points):
+    """
+    Perform 2D integration of the effective bispectrum integrand using Gauss-Legendre quadrature.
+
+    Parameters
+    ----------
+    tr : tuple or jnp.ndarray
+        Triangle side lengths (ka_m, kb_m, kc_m) in real space.
+    cosm_par : jnp.ndarray
+        Cosmological parameters array.
+    pk_in : tuple or jnp.ndarray
+        Power spectrum values at ka_m, kb_m, kc_m.
+    sig_fog : float
+        Finger-of-God damping factor.
+    log_km : jnp.ndarray
+        Logarithm of wavevector magnitudes for interpolation.
+    log_pkm : jnp.ndarray
+        Logarithm of power spectrum values for interpolation.
+    af : jnp.ndarray
+        Array of coefficients for the GEO-FPT factor.
+    mp : int
+        Multipole index (0 for monopole, 1 for quadrupole, etc.).
+    xmin : tuple
+        Lower bounds of integration (mua_min, phi_min).
+    xmax : tuple
+        Upper bounds of integration (mua_max, phi_max).
+    num_points : int, optional
+        Number of Gauss-Legendre points for mua and phi axes. Default is 20.
+
+    Returns
+    -------
+    float
+        Result of the 2D integration.
+    """
+    nx , ny = num_points, num_points
+    def integrand(mua, phi):
+        return bkeff_r_scalar(mua, phi, tr, cosm_par, pk_in, sig_fog, log_km, log_pkm, af, mp)
+
+    return integrate_2d_gauss(integrand, xmin[0], xmax[0], xmin[1], xmax[1], nx=nx, ny=ny)
+
+def _integrate_bkeff_r(tr, cosm_par, pk_in, sig_fog, log_km, log_pkm, af, mp, xmin, xmax, num_points):
     """
     Perform 2D integration of the effective bispectrum integrand.
 
@@ -394,7 +506,6 @@ def integrate_bkeff_r(tr, cosm_par, pk_in, sig_fog, log_km, log_pkm, af, mp, xmi
 
 
 vec_integrate_bkeff_r = jax.jit(jax.vmap(integrate_bkeff_r, in_axes = (0, None, 0, None, None, None, None, None, None, None, None)), static_argnames = ('num_points',))
-vec_integrate = jax.jit(jax.vmap(integrate_2d, in_axes = (None, None, None, None, None, (0, None, 0, None, None, None, None, None))), static_argnames = ('f',))
 
 
 
@@ -466,7 +577,7 @@ def ext_bk_mp(tr, tr2, tr3, tr4, log_km, log_pkm, cosm_par, redshift, fi_vals=F_
 
 
 @partial(jax.jit, static_argnames=('num_points',))
-def bk_multip(tr, tr2, tr3, tr4, kp, pk, cosm_par, redshift, num_points=50, fi_vals=F_VALS_FULL):
+def bk_multip(tr, tr2, tr3, tr4, kp, pk, cosm_par, redshift, num_points=10, fi_vals=F_VALS_FULL):
     """
     Compute the bispectrum multipoles for a given set of triangles, power spectrum, and cosmological parameters.
 

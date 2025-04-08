@@ -71,7 +71,7 @@ fig.savefig("plots/test_bispec.png", dpi=300)
 
 # Compute bispectrum
 
-for num_points in [11, 20 ,50 ,100]:
+for num_points in [10, 15, 20]:
     bk0, bk200, bk020, bk002 = bk_multip(tr0,tr0,tr020,tr020,kp,nlmpk,cosm_par,redshift=0.5, num_points = num_points)
     tic = time.time()
     bk0, bk200, bk020, bk002 = bk_multip(tr0,tr0,tr020,tr020,kp,nlmpk,cosm_par,redshift=0.5, num_points = num_points)
