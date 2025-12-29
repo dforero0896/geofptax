@@ -251,10 +251,12 @@ def z2_ker(ka, kb, kc, fkern, gkern, mua, mub, cosm_par):
         Value of the Z2 kernel.
     """
     cab = cosab(ka, kb, kc)
+    
     b1, ff, b2 = cosm_par[4], cosm_par[1], cosm_par[5]
 
     ksq = jnp.sqrt(ka**2 + kb**2 + 2 * ka * kb * cab)  # modulus of vector sum k1 + k2
     mu12 = (ka * mua + kb * mub) / ksq
+    
     # TODO: relax condition on bs and make it a parameter.
     bs = -4.0 / 7.0 * (b1 - 1.0)
     s2 = cab**2 - 1.0 / 3.0  # S_2 kernel
@@ -292,10 +294,11 @@ def geo_fac(ka, kb, kc, af, hh):
     """
     # Determine kmax, kmed, kmin
     k = jnp.array([ka, kb, kc])
-    kmax = jnp.max(k)
-    kmin = jnp.min(k)
-    kmed = jnp.sum(k) - kmax - kmin
-
+    kmax = jnp.max(k, axis = 0)
+    kmin = jnp.min(k, axis = 0)
+    kmed = jnp.sum(k, axis = 0) - kmax - kmin
+    
+    
     # Compute cosines
     cosmax = (kmed**2 + kmin**2 - kmax**2) / (2 * kmed * kmin)
     cosmed = (kmax**2 + kmin**2 - kmed**2) / (2 * kmax * kmin)
@@ -307,7 +310,7 @@ def geo_fac(ka, kb, kc, af, hh):
 
     # Compute extra term
     extra = af[0] + af[1] * cosmed / cosmin + af[2] * cosmax / cosmin + af[3] * area + af[4] * area**2
-
+    
     return extra
 
 
@@ -760,7 +763,8 @@ def bkeff_sugiyama(k1, k2, x12, mu1, phi, cosm_par, pk_interp,
     
     # 1. Compute triangle geometry and AP transforms
     k3_m = jnp.sqrt(k1**2 + k2**2 + 2 * k1 * k2 * x12)
-    mu2_m = mu1 * x12 - jnp.sqrt((1.0 - mu1**2) * (1.0 - x12**2)) * jnp.cos(phi)
+    #mu2_m = mu1 * x12 - jnp.sqrt((1.0 - mu1**2) * (1.0 - x12**2)) * jnp.cos(phi)
+    mu2_m = mu1 * x12 + jnp.sqrt((1.0 - mu1**2) * (1.0 - x12**2)) * jnp.cos(phi)
     muc_m = (-k1 * mu1 - k2 * mu2_m) / k3_m
     
     # AP transforms to redshift space
@@ -784,6 +788,8 @@ def bkeff_sugiyama(k1, k2, x12, mu1, phi, cosm_par, pk_interp,
     z1_1 = z1_ker(mu1_rs, cosm_par)
     z1_2 = z1_ker(mu2_rs, cosm_par)
     z1_3 = z1_ker(muc_rs, cosm_par)
+
+    
     
     # 5. Compute F2 and G2 kernels
     f2k_12 = f2_ker(k1_rs, k2_rs, k3_rs)
@@ -793,12 +799,13 @@ def bkeff_sugiyama(k1, k2, x12, mu1, phi, cosm_par, pk_interp,
     g2k_12 = g2_ker(k1_rs, k2_rs, k3_rs)
     g2k_23 = g2_ker(k2_rs, k3_rs, k1_rs)
     g2k_13 = g2_ker(k1_rs, k3_rs, k2_rs)
+
     
     # 6. Compute Z2 kernels with GEO-FPT
     z2_12 = z2_ker(k1_rs, k2_rs, k3_rs, f2k_12, g2k_12, mu1_rs, mu2_rs, cosm_par) * eff_fact
     z2_23 = z2_ker(k2_rs, k3_rs, k1_rs, f2k_23, g2k_23, mu2_rs, muc_rs, cosm_par) * eff_fact
     z2_13 = z2_ker(k1_rs, k3_rs, k2_rs, f2k_13, g2k_13, mu1_rs, muc_rs, cosm_par) * eff_fact
-    
+    #jax.debug.print("GEO fac = {}", eff_fact)
     # 7. Get power spectra
     spline_me = lambda logk: jnp.interp(logk, log_km, log_pkm)
     pk1 = 10**spline_me(jnp.log10(k1_rs))
@@ -809,6 +816,8 @@ def bkeff_sugiyama(k1, k2, x12, mu1, phi, cosm_par, pk_interp,
     B12 = z1_1 * z1_2 * z2_12 * pk1 * pk2
     B23 = z1_2 * z1_3 * z2_23 * pk2 * pk3
     B31 = z1_1 * z1_3 * z2_13 * pk1 * pk3
+
+    
     
     tree_level = B12 + B23 + B31
     
@@ -822,7 +831,8 @@ def bkeff_sugiyama(k1, k2, x12, mu1, phi, cosm_par, pk_interp,
     
     # 10. Combine: tree-level gets FoG damping, shot noise does not
     # The expression handles zero shot noise automatically when A_P=0, A_B=0
-    result = (D_fog * tree_level + shot_noise) / (2 * jnp.pi * alpa**2 * alpe**4)
+    #result = (D_fog * tree_level + shot_noise) / (2 * jnp.pi * alpa**2 * alpe**4)
+    result = (D_fog * tree_level + shot_noise) / (alpa**2 * alpe**4)
     
     # 11. Apply validity mask (triangle inequality)
     #valid = (k2_rs + k1_rs - k3_rs >= hh * 1.1 * 2 * jnp.pi / 1000.0) & \
@@ -918,7 +928,22 @@ def compute_sugiyama_multipoles(k1k2_pairs, log_km, log_pkm, cosm_par, redshift,
         # Integrate with basis functions
         coeffs = jnp.zeros(6)
         for i in range(6):
-            coeffs = coeffs.at[i].set(jnp.sum(B * basis_grid[i] * W_total))
+            #coeffs = coeffs.at[i].set(jnp.sum(B * basis_grid[i] * W_total))
+            # Step 1: Integrate over φ (multiply by 2 like in FOLPSD)
+            # phi_wts shape: (Nφ,), broadcast to (1, 1, Nφ)
+            phi_integrand = B * basis_grid[i] * phi_wts[None, None, :]
+            int_phi = 2.0 * jnp.sum(phi_integrand, axis=2)  # Shape: (Nx, Nμ)
+            
+            # Step 2: Integrate over μ
+            # mu_wts shape: (Nμ,), broadcast to (1, Nμ)
+            mu_integrand = int_phi * mu_wts[None, :]
+            int_mu = jnp.sum(mu_integrand, axis=1)  # Shape: (Nx,)
+            
+            # Step 3: Integrate over x
+            # x_wts shape: (Nx,)
+            int_all = jnp.sum(int_mu * x_wts)
+            
+            coeffs = coeffs.at[i].set(int_all)
         
         return coeffs
     
@@ -942,4 +967,66 @@ def bk_sugiyama_multip(k1, k2, kp, pk, cosm_par, redshift, num_points=10, fi_val
     return compute_sugiyama_multipoles(k1k2_pairs, jnp.log10(kp), jnp.log10(pk), cosm_par, 
                                           redshift, fi_vals=fi_vals, 
                                           num_points=num_points)
+
+
+
+def pt_kernel(k, q, wq):
+    jq = q**2 * wq / (4. * np.pi**2)
+    k = k[:, None]
+    x = q / k
+    # Integral of F3(q, -q, k) over mu cosine angle between k and q
+    def kernel_ff(x):
+        x = np.array(x)
+        toret = (6. / x**2 - 79. + 50. * x**2 - 21. * x**4 + 0.75 * (1. / x - x)**3 * (2. + 7. * x**2) * 2 * np.log(np.abs((x - 1.) / (x + 1.)))) / 504.
+        mask = x > 10.
+        toret[mask] = - 61. / 630. + 2. / 105. / x[mask]**2 - 10. / 1323. / x[mask]**4
+        dx = x - 1.
+        mask = np.abs(dx) < 0.01
+        toret[mask] = - 11. / 126. + dx[mask] / 126. - 29. / 252. * dx[mask]**2
+        return toret / x**2
+
+    return 2 * jq * kernel_ff(x)
+
+
+@jax.jit
+def pt_pk_1loop(k, q, wq, pk_q, kernel13_d):
+    # We could have a speed-up with FFTlog, see https://arxiv.org/pdf/1603.04405.pdf
+    k11 = k
+    k = k[:, None]
+    jq = q**2 * wq / (4. * jnp.pi**2)
+
+    
+    mus, wmus = jax_leggauss(jnp.arange(20))
+    mus = 0.5 * (mus + 1) * 2 - 1
+
+    # Compute P22
+    pk_k = jnp.interp(k11, q, pk_q)
+
+    def get_pk22_dd(mu, wmu):
+        kdq = k * q * mu  # k \cdot q
+        kq2 = k**2 - 2. * kdq + q**2  # |k - q|^2
+        qdkq = kdq - q**2   # k \cdot (k - q)
+        F2_d = 5. / 7. + 1. / 2. * qdkq * (1. / q**2 + 1. / kq2) + 2. / 7. * qdkq**2 / (q**2 * kq2)
+        pk_kq = jnp.interp(kq2**0.5, q, pk_q, left=0., right=0.)
+        jq_pk_q_pk_kq = jq * pk_q * pk_kq
+        return 2 * wmu * jnp.sum(F2_d**2 * jq_pk_q_pk_kq, axis=-1)
+
+    pk22_dd = jnp.sum(jax.vmap(get_pk22_dd)(mus, wmus), axis=0)
+    pk11 = pk_k
+    pk13_dd = 2. * jnp.sum(kernel13_d * pk_q, axis=-1) * pk_k
+    pk_dd = pk11 + pk22_dd + pk13_dd
+    return pk_dd
+
+def weights_trapz(x):
+    #From desilike.utils
+    """Return weights for trapezoidal integration."""
+    if x.size == 0:
+        return np.array(1.)
+    if x.size == 1:
+        return np.ones(x.size)
+    if x.size == 2:
+        return np.ones(x.size) / 2. * (x[1] - x[0])
+    return jnp.insert(x[2:] - x[:-2], jnp.array([0, len(x) - 1]), jnp.array([x[1] - x[0], x[-1] - x[-2]])) / 2.
+
+
 
