@@ -68,14 +68,24 @@ for i in range(3):
     ax[2,i].plot(bks[i]/means[i] / c_ratio[-1] - 1,label=r'GEO-FPT')
 fig.savefig("plots/test_bispec.png", dpi=300)
 
+from geofptax.kernels import geo_fac_vec, F_VALS_FULL, interpol_ker
+a_t = 1.0 / (1.0 + redshift)
+
+# Interpolate the kernel values
+af = interpol_ker(a_t, F_VALS_FULL)
+geo_fac_vec(tr0[:,0], tr0[:,1], tr0[:,2], af, 1.)
+
 
 # Compute bispectrum
 
 for num_points in [10, 15, 20]:
-    bk0, bk200, bk020, bk002 = bk_multip(tr0,tr0,tr020,tr020,kp,nlmpk,cosm_par,redshift=0.5, num_points = num_points)
+    bk = bk_multip(tr0,tr0,tr020,tr020,kp,nlmpk,cosm_par,redshift=0.5, num_points = num_points)
     tic = time.time()
-    bk0, bk200, bk020, bk002 = bk_multip(tr0,tr0,tr020,tr020,kp,nlmpk,cosm_par,redshift=0.5, num_points = num_points)
+    bk = bk_multip(tr0,tr0,tr020,tr020,kp,nlmpk,cosm_par,redshift=0.5, num_points = num_points)
     print(f"Took {time.time() - tic} s", flush = True)
+
+    
+    bk0, bk200, bk020, bk002 = bk['000'], bk['200'], bk['020'], bk['002']
 
 
     #compute the Poisson shot-noise from the measuremenents
@@ -109,7 +119,8 @@ fig.savefig("plots/test_bispec.png", dpi=300)
 
 
 def bk_model(tr, tr2,tr3,tr4, kp, pk, cosm_par, redshift, fi_vals, num_points = 20):
-    bk0, bk200, bk020, bk002 = bk_multip(tr, tr2,tr3,tr4, kp, pk, cosm_par, redshift, num_points = num_points, fi_vals = fi_vals)
+    bk = bk_multip(tr, tr2,tr3,tr4, kp, pk, cosm_par, redshift, num_points = num_points, fi_vals = fi_vals)
+    bk0, bk200, bk020, bk002 = bk['000'], bk['200'], bk['020'], bk['002']
     A_B = cosm_par[8]/(cosm_par[2]*cosm_par[3]*cosm_par[3])**2
     bk0 += (A_B-1.)*sn0
     bk200 += (A_B-1.)*sn200
