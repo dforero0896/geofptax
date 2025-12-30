@@ -609,16 +609,16 @@ def bk_multip(tr, tr2, tr3, tr4, kp, pk, cosm_par, redshift, num_points=10, fi_v
 
     Returns
     -------
-    tuple
-        A tuple containing the bispectrum monopole (bk0), first multipole (bk200),
-        second multipole (bk020), and third multipole (bk002).
+    dict
+        A dict containing the bispectrum monopole (000), first multipole (200),
+        second multipole (020), and third multipole (002).
     """
     # Compute the bispectrum multipoles
     bk0, bk200, bk020, bk002 = ext_bk_mp(
         tr, tr2, tr3, tr4, jnp.log10(kp), jnp.log10(pk), cosm_par, redshift, num_points=num_points, fi_vals=fi_vals
     )
 
-    return bk0, bk200, bk020, bk002
+    return {'000':bk0, '200':bk200, '020':bk020, '002':bk002}
 
 
 ######### Sugiyama estimator #################
@@ -655,96 +655,6 @@ def geo_fac_sugiyama_simple(k1, k2, x12, af, hh=1.0):
 geo_fac_sugiyama_simple_vec = jax.vmap(geo_fac_sugiyama_simple, 
                                        in_axes=(0, 0, 0, None, None))
 
-
-def _bkeff_sugiyama(k1, k2, x12, mu1, phi, cosm_par, pk_interp, 
-                   log_km, log_pkm, af, mp=None, hh=1.0):
-    """
-    Sugiyama bispectrum integrand with direct shot noise integration.
-    
-    Uses A_P (cosm_par[6]) and A_B (cosm_par[8]) for shot noise.
-    """
-    # Extract parameters
-    alpa, alpe = cosm_par[2], cosm_par[3]
-    b1, ff = cosm_par[4], cosm_par[1]
-    sig_fog = cosm_par[9]  # σ_B
-    A_P = cosm_par[6]      # Power spectrum shot noise
-    A_B = cosm_par[8]      # Bispectrum shot noise
-    
-    Fsq = 1.0 / (alpa / alpe)**2
-    
-    # 1. Compute triangle geometry and AP transforms
-    k3_m = jnp.sqrt(k1**2 + k2**2 + 2 * k1 * k2 * x12)
-    mu2_m = mu1 * x12 - jnp.sqrt((1.0 - mu1**2) * (1.0 - x12**2)) * jnp.cos(phi)
-    muc_m = (-k1 * mu1 - k2 * mu2_m) / k3_m
-    
-    # AP transforms to redshift space
-    k1_rs = k1 * jnp.sqrt(1.0 + mu1**2 * (Fsq - 1.0)) / alpe
-    k2_rs = k2 * jnp.sqrt(1.0 + mu2_m**2 * (Fsq - 1.0)) / alpe
-    k3_rs = k3_m * jnp.sqrt(1.0 + muc_m**2 * (Fsq - 1.0)) / alpe
-    
-    # Transform mu's to redshift space
-    mu1_rs = mu1 * alpe / (alpa * jnp.sqrt(1.0 + mu1**2 * (Fsq - 1.0)))
-    mu2_rs = mu2_m * alpe / (alpa * jnp.sqrt(1.0 + mu2_m**2 * (Fsq - 1.0)))
-    muc_rs = muc_m * alpe / (alpa * jnp.sqrt(1.0 + muc_m**2 * (Fsq - 1.0)))
-    
-    # 2. Compute GEO-FPT factor
-    eff_fact = geo_fac_sugiyama_simple(k1, k2, x12, af, hh)
-    
-    # 3. Apply FoG damping (using σ_B = cosm_par[9])
-    D_fog = 1. / (1 + 0.5 * ((k1_rs * mu1_rs)**2 + 
-                              (k2_rs * mu2_rs)**2 + 
-                              (k3_rs * muc_rs)**2)**2 * (sig_fog / hh)**4)**2
-    
-    # 4. Compute Z1 kernels
-    z1_1 = z1_ker(mu1_rs, cosm_par)
-    z1_2 = z1_ker(mu2_rs, cosm_par)
-    z1_3 = z1_ker(muc_rs, cosm_par)
-    
-    # 5. Compute F2 and G2 kernels
-    f2k_12 = f2_ker(k1_rs, k2_rs, k3_rs)
-    f2k_23 = f2_ker(k2_rs, k3_rs, k1_rs)
-    f2k_13 = f2_ker(k1_rs, k3_rs, k2_rs)
-    
-    g2k_12 = g2_ker(k1_rs, k2_rs, k3_rs)
-    g2k_23 = g2_ker(k2_rs, k3_rs, k1_rs)
-    g2k_13 = g2_ker(k1_rs, k3_rs, k2_rs)
-    
-    # 6. Compute Z2 kernels with GEO-FPT
-    z2_12 = z2_ker(k1_rs, k2_rs, k3_rs, f2k_12, g2k_12, mu1_rs, mu2_rs, cosm_par) * eff_fact
-    z2_23 = z2_ker(k2_rs, k3_rs, k1_rs, f2k_23, g2k_23, mu2_rs, muc_rs, cosm_par) * eff_fact
-    z2_13 = z2_ker(k1_rs, k3_rs, k2_rs, f2k_13, g2k_13, mu1_rs, muc_rs, cosm_par) * eff_fact
-    
-    # 7. Get power spectra
-    spline_me = lambda logk: jnp.interp(logk, log_km, log_pkm)
-    pk1 = 10**spline_me(jnp.log10(k1_rs))
-    pk2 = 10**spline_me(jnp.log10(k2_rs))
-    pk3 = 10**spline_me(jnp.log10(k3_rs))
-    
-    # 8. Form tree-level bispectrum terms
-    B12 = z1_1 * z1_2 * z2_12 * pk1 * pk2
-    B23 = z1_2 * z1_3 * z2_23 * pk2 * pk3
-    B31 = z1_1 * z1_3 * z2_13 * pk1 * pk3
-    
-    tree_level = B12 + B23 + B31
-    
-    # 9. Compute shot noise terms (FOLPSD-style, using A_P and A_B)
-    # FOLPSD formula: (b1*Bshot + 2*Pshot*f*μ²) * Z1 * P(k) + Pshot²
-    # We use: Bshot = A_B, Pshot = A_P
-    if A_P != 0.0 or A_B != 0.0:
-        # Note: FOLPSD uses Z1_eft (with EFT corrections) for shot noise
-        # We'll use standard Z1 for consistency with your tree-level
-        shot1 = (b1 * A_B + 2.0 * A_P * ff * mu1_rs**2) * z1_1 * pk1
-        shot2 = (b1 * A_B + 2.0 * A_P * ff * mu2_rs**2) * z1_2 * pk2
-        shot3 = (b1 * A_B + 2.0 * A_P * ff * muc_rs**2) * z1_3 * pk3
-        
-        shot_noise = shot1 + shot2 + shot3 + A_P**2
-    else:
-        shot_noise = 0.0
-    
-    # 10. Combine: tree-level gets FoG damping, shot noise does not
-    result = (D_fog * tree_level + shot_noise) / (2 * jnp.pi * alpa**2 * alpe**4)
-    
-    return result
 
 def bkeff_sugiyama(k1, k2, x12, mu1, phi, cosm_par, pk_interp, 
                    log_km, log_pkm, af, mp=None, hh=1.0):
@@ -813,9 +723,9 @@ def bkeff_sugiyama(k1, k2, x12, mu1, phi, cosm_par, pk_interp,
     pk3 = 10**spline_me(jnp.log10(k3_rs))
     
     # 8. Form tree-level bispectrum terms
-    B12 = z1_1 * z1_2 * z2_12 * pk1 * pk2
-    B23 = z1_2 * z1_3 * z2_23 * pk2 * pk3
-    B31 = z1_1 * z1_3 * z2_13 * pk1 * pk3
+    B12 = 2 * z1_1 * z1_2 * z2_12 * pk1 * pk2
+    B23 = 2 * z1_2 * z1_3 * z2_23 * pk2 * pk3
+    B31 = 2 * z1_1 * z1_3 * z2_13 * pk1 * pk3
 
     
     
@@ -843,7 +753,7 @@ def bkeff_sugiyama(k1, k2, x12, mu1, phi, cosm_par, pk_interp,
     return result
 # Vectorized version
 bkeff_sugiyama_vec = jax.vmap(bkeff_sugiyama, 
-                             in_axes=(0, 0, 0, 0, 0, None, None, None, None, None, None, None))
+                             in_axes=(None, None, 0, 0, 0, None, None, None, None, None, None, None))
 
 
 def compute_basis_grid(x_pts, mu_pts, phi_pts):
@@ -884,7 +794,7 @@ def compute_basis_grid(x_pts, mu_pts, phi_pts):
     
     return jnp.stack([b000, b110, b220, b202, b022, b112], axis=0)
 
-def compute_sugiyama_multipoles(k1k2_pairs, log_km, log_pkm, cosm_par, redshift,
+def _compute_sugiyama_multipoles(k1k2_pairs, log_km, log_pkm, cosm_par, redshift,
                                 fi_vals=F_VALS_FULL, num_points=50):
     """
     Compute all 6 Sugiyama coefficients with integrated shot noise.
@@ -959,14 +869,87 @@ def compute_sugiyama_multipoles(k1k2_pairs, log_km, log_pkm, cosm_par, redshift,
     
     return normalized_coeffs.T
 
-
+def compute_sugiyama_multipoles(k1k2_pairs, log_km, log_pkm, cosm_par, redshift,
+                                      fi_vals=F_VALS_FULL, num_points=50):
+    """
+    Compute Sugiyama coefficients using scalar functions and proper vmap.
+    """
+    # Setup
+    a_t = 1.0 / (1.0 + redshift)
+    af = interpol_ker(a_t, fi_vals)
+    
+    # Create quadrature grids
+    x_pts, x_wts = jax_leggauss(jnp.arange(num_points))
+    x_pts = 0.5 * (x_pts + 1) * 2 - 1  # Transform to [-1, 1]
+    
+    mu_pts, mu_wts = jax_leggauss(jnp.arange(num_points))
+    mu_pts = 0.5 * (mu_pts + 1) * 2 - 1  # Transform to [-1, 1]
+    
+    phi_pts, phi_wts = jax_leggauss(jnp.arange(num_points))
+    phi_pts = 0.5 * (phi_pts + 1) * (2 * jnp.pi)  # Transform to [0, 2π]
+    phi_wts = phi_wts * jnp.pi  # Adjust weights for [0, 2π] interval
+    
+    # Create meshgrids
+    X, M, P = jnp.meshgrid(x_pts, mu_pts, phi_pts, indexing='ij')
+    Wx, Wm, Wp = jnp.meshgrid(x_wts, mu_wts, phi_wts, indexing='ij')
+    W_total = Wx * Wm * Wp
+    
+    # Precompute basis grid
+    basis_grid = compute_basis_grid(x_pts, mu_pts, phi_pts)  # shape: (6, Nx, Nmu, Nphi)
+    
+    # Power spectrum interpolation function
+    def pk_interp(k):
+        return 10**jnp.interp(jnp.log10(k), log_km, log_pkm)
+    
+    # Process each triangle pair
+    def process_pair(k1k2):
+        k1, k2 = k1k2
+        
+        # Flatten the grid for vectorized computation
+        x_flat = X.ravel()
+        mu_flat = M.ravel()
+        phi_flat = P.ravel()
+        w_flat = W_total.ravel()
+        
+        # Vectorized computation using vmap
+        # Note: we vmap over the flattened grid, not over k1, k2
+        B_flat = bkeff_sugiyama_vec(
+            k1, k2, x_flat, mu_flat, phi_flat,
+            cosm_par, pk_interp, log_km, log_pkm, af, None, 1.0
+        )
+        
+        # Reshape back to 3D
+        B_3d = B_flat.reshape(X.shape)
+        
+        # Compute coefficients by integrating with basis functions
+        coeffs = jnp.zeros(6)
+        for i in range(6):
+            # Multiply by basis function and integrate
+            integrand = B_3d * basis_grid[i]
+            coeffs = coeffs.at[i].set(jnp.sum(integrand * W_total))
+        
+        return coeffs
+    
+    # Vectorize over triangle pairs
+    all_coeffs = jax.vmap(process_pair)(k1k2_pairs)
+    
+    # Apply normalization factors (H factors from FOLPSD)
+    H_factors = jnp.array([1.0, -1.0/jnp.sqrt(3.0), 1.0/jnp.sqrt(5.0),
+                           1.0/jnp.sqrt(5.0), 1.0/jnp.sqrt(5.0), 
+                           jnp.sqrt(2.0/15.0)])
+    
+    normalized_coeffs = all_coeffs * H_factors
+    
+    return normalized_coeffs.T
 
 def bk_sugiyama_multip(k1, k2, kp, pk, cosm_par, redshift, num_points=10, fi_vals=F_VALS_FULL):
     
     k1k2_pairs=jnp.vstack([k1,k2]).T
-    return compute_sugiyama_multipoles(k1k2_pairs, jnp.log10(kp), jnp.log10(pk), cosm_par, 
+    bk = compute_sugiyama_multipoles(k1k2_pairs, jnp.log10(kp), jnp.log10(pk), cosm_par, 
                                           redshift, fi_vals=fi_vals, 
                                           num_points=num_points)
+    labels = ['000', '110', '220', '202', '022', '112']
+    return dict(zip(labels, bk))
 
 
 
