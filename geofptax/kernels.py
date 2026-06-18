@@ -508,7 +508,7 @@ def geo_fac(ka, kb, kc, af, hh):
     
     return extra
 
-def geo_fac_damped(ka, kb, kc, af, hh, k_damp=0.12, width=0.03):
+def geo_fac_damped(ka, kb, kc, af, hh, k_damp=0.12, width=5.):
     """
     GEO-FPT factor with smooth damping beyond a specified scale.
     
@@ -556,13 +556,69 @@ def geo_fac_damped(ka, kb, kc, af, hh, k_damp=0.12, width=0.03):
     standard = geo_fac(ka, kb, kc, af, hh)
     
     # Damping factor: 1 for k << k_damp, 0 for k >> k_damp
-    damp = jnp.exp(-((k_avg - k_damp)/width)**2)
+    #damp = jnp.exp(-((k_avg - k_damp)/width)**2)
+    damp = (jax.nn.sigmoid(-width * (ka - k_damp))) * (jax.nn.sigmoid(-width * (kb - k_damp))) * (jax.nn.sigmoid(-width * (kc - k_damp)))
     
     # Apply damping to corrections (keep f₁ term)
     f1_only = af[0]  # Just the constant term
     corrections = standard - f1_only
     
     return f1_only + damp * corrections
+
+def geo_fac_pade(ka, kb, kc, af, hh, A_peak=6.235):
+    """
+    GEO-FPT factor with Padé [1/2] approximant for area terms.
+    
+    Parameters:
+    -----------
+    ka, kb, kc : float or jnp.ndarray
+        Triangle side lengths (real space, in h/Mpc).
+    af : jnp.ndarray
+        Array of 5 GEO-FPT coefficients: [f1, f2, f3, f4, f5].
+    hh : float
+        Hubble parameter (normalization).
+    A_peak : float, optional
+        Characteristic area (in units of A_norm) where the correction peaks.
+        Default is 6.235, corresponding to equilateral triangle with k=0.12 h/Mpc.
+    
+    Returns:
+    --------
+    extra : float or jnp.ndarray
+        The GEO-FPT correction factor.
+    """
+    # Unpack coefficients
+    f1, f2, f3, f4, f5 = af
+    
+    # Compute triangle area (normalized by A_norm = 0.001 (h/Mpc)^2)
+    perim = (ka + kb + kc) / 2
+    area_sq = perim * (perim - ka) * (perim - kb) * (perim - kc)
+    area = jnp.sqrt(jnp.maximum(area_sq, 1e-20)) / (hh**2 * 0.001)
+    
+    # Compute shape terms (cosines of angles)
+    k = jnp.array([ka, kb, kc])
+    kmax = jnp.max(k, axis=0)
+    kmin = jnp.min(k, axis=0)
+    kmed = jnp.sum(k, axis=0) - kmax - kmin
+    
+    cosmax = (kmed**2 + kmin**2 - kmax**2) / (2 * kmed * kmin)
+    cosmed = (kmax**2 + kmin**2 - kmed**2) / (2 * kmax * kmin)
+    cosmin = (kmax**2 + kmed**2 - kmin**2) / (2 * kmax * kmed)
+    
+    # Padé [1/2] parameters
+    p1 = f4
+    q1 = -f5 / f4
+    q2 = 1.0 / (A_peak**2)   # alternative: q2 = (f5/f4)**2 for zero cubic term
+    
+    # Padé approximant for area terms
+    area_terms = (p1 * area) / (1.0 + q1 * area + q2 * area**2)
+    
+    # Complete GEO-FPT factor
+    extra = (f1 + 
+             f2 * jnp.where(jnp.abs(cosmin) > 1e-10, cosmed/cosmin, 0.0) + 
+             f3 * jnp.where(jnp.abs(cosmin) > 1e-10, cosmax/cosmin, 0.0) + 
+             area_terms)
+    
+    return extra
 
 
 # Vectorized versions of the functions
@@ -642,7 +698,9 @@ def bkeff_r_scalar(mua_m, phi, tr, cosm_par, pk_in, sig_fog, log_km, log_pkm, af
     
     alpa, alpe = cosm_par[2], cosm_par[3]
     Fsq = 1.0 / (alpa / alpe)**2
-
+    b1, ff = cosm_par[4], cosm_par[1]
+    A_P = cosm_par[6] - 1  # Power spectrum shot noise
+    A_B = cosm_par[8] - 1  # Bispectrum shot noise
     cab_m = cosab(ka_m, kb_m, kc_m)
     mub_m = mua_m * cab_m - jnp.sqrt((1.0 - mua_m**2) * (1.0 - cab_m**2)) * jnp.cos(phi)
     muc_m = (-ka_m * mua_m - kb_m * mub_m) / kc_m
@@ -697,8 +755,15 @@ def bkeff_r_scalar(mua_m, phi, tr, cosm_par, pk_in, sig_fog, log_km, log_pkm, af
                             z1_3 * z1_2 * z2_23 * pkc * pkb +
                             z1_1 * z1_3 * z2_13 * pka * pkc) / (2 * jnp.pi * alpa**2 * alpe**4)
 
-    return valid * result #jnp.where(valid, result, 0.0)
 
+    shot_noise = ((b1 * A_B + 2.0 * A_P * ff * mua**2) * z1_1 * pka +
+                  (b1 * A_B + 2.0 * A_P * ff * mub**2) * z1_2 * pkb +
+                  (b1 * A_B + 2.0 * A_P * ff * muc**2) * z1_3 * pkc +
+                  A_P**2)
+
+    return valid * result #jnp.where(valid, result, 0.0)
+    #result += leg * shot_noise / (2 * jnp.pi * alpa**2 * alpe**4)
+    #return result
 
 bkeff_r_vmap = jax.vmap(bkeff_r_scalar, in_axes=(0, 0, None, None, None, None, None, None, None, None))
 
@@ -1015,6 +1080,7 @@ def geo_fac_sugiyama_simple(k1, k2, x12, af, hh=1.0):
     k3 = jnp.sqrt(k1**2 + k2**2 + 2 * k1 * k2 * x12)
     
     # Call original geo_fac
+    #return geo_fac_pade(k1, k2, k3, af, hh)
     return geo_fac(k1, k2, k3, af, hh)
 
 
@@ -1380,91 +1446,56 @@ def bk_sugiyama_multip(k1, k2, kp, pk, cosm_par, redshift, num_points=10, fi_val
 
 
 
+@jax.jit
 def pt_kernel(k, q, wq):
-    """
-    Compute the 1-loop F3 kernel for power spectrum corrections.
+    """Vectorized kernel calculation using Gauss-Legendre quadrature."""
+    jq = q**2 * wq / (4. * jnp.pi**2)
+    x = q / k[:, None]
     
-    This kernel is used in the 1-loop power spectrum calculation,
-    specifically for the P13 term.
-
-    Parameters
-    ----------
-    k : jnp.ndarray
-        External wavevector magnitudes (shape: N_k)
-    q : jnp.ndarray
-        Internal integration wavevector magnitudes (shape: N_q)
-    wq : jnp.ndarray
-        Integration weights for q (typically from trapezoidal rule)
-
-    Returns
-    -------
-    jnp.ndarray
-        Kernel values of shape (N_k, N_q)
-    
-    Notes
-    -----
-    - Implements the angle-averaged F3(q, -q, k) kernel
-    - Derived from perturbation theory integrals
-    - Uses piecewise approximations for stability
-    """
-    jq = q**2 * wq / (4. * np.pi**2)
-    k = k[:, None]
-    x = q / k
-    # Integral of F3(q, -q, k) over mu cosine angle between k and q
     def kernel_ff(x):
-        x = np.array(x)
-        toret = (6. / x**2 - 79. + 50. * x**2 - 21. * x**4 + 0.75 * (1. / x - x)**3 * (2. + 7. * x**2) * 2 * np.log(np.abs((x - 1.) / (x + 1.)))) / 504.
+        toret = (6./x**2 - 79. + 50.*x**2 - 21.*x**4 + 
+                0.75*(1./x - x)**3*(2. + 7.*x**2)*2*jnp.log(jnp.abs((x - 1.)/(x + 1.))))/504.
         mask = x > 10.
-        toret[mask] = - 61. / 630. + 2. / 105. / x[mask]**2 - 10. / 1323. / x[mask]**4
+        toret = jnp.where(mask, -61./630. + 2./105./x**2 - 10./1323./x**4, toret)
         dx = x - 1.
-        mask = np.abs(dx) < 0.01
-        toret[mask] = - 11. / 126. + dx[mask] / 126. - 29. / 252. * dx[mask]**2
-        return toret / x**2
+        mask = jnp.abs(dx) < 0.01
+        return jnp.where(mask, -11./126. + dx/126. - 29./252.*dx**2, toret)/x**2
 
     return 2 * jq * kernel_ff(x)
 
-
-@jax.jit
-def pt_pk_1loop(k, q, wq, pk_q, kernel13_d):
+@partial(jax.jit, static_argnames = ('n_gauss'))
+def pt_pk_1loop(k, q, wq, pk_q, kernel13_d, n_gauss=20):
     """
-    Compute 1-loop matter power spectrum using standard perturbation theory.
+    Compute 1-loop power spectrum using Gauss-Legendre quadrature.
     
-    Computes P_δδ(k) at 1-loop order: P11 + P22 + P13.
-
     Parameters
     ----------
     k : jnp.ndarray
-        External wavevector magnitudes at which to compute P(k).
+        Output wavenumbers
     q : jnp.ndarray
-        Internal integration wavevector magnitudes.
-    wq : jnp.ndarray
-        Integration weights for q.
+        Integration wavenumbers
     pk_q : jnp.ndarray
-        Linear power spectrum at wavevectors q.
-    kernel13_d : jnp.ndarray
-        Precomputed P13 kernel of shape (len(k), len(q)).
-
+        Linear power spectrum at q
+    n_gauss : int
+        Number of Gauss-Legendre points for angular integration
+        
     Returns
     -------
     jnp.ndarray
-        1-loop matter power spectrum P_δδ(k).
-    
-    Notes
-    -----
-    - P22 term computed by integrating over angle μ
-    - P13 term uses precomputed kernel
-    - Could be accelerated with FFTlog techniques (see arXiv:1603.04405)
+        1-loop power spectrum
     """
-    # We could have a speed-up with FFTlog, see https://arxiv.org/pdf/1603.04405.pdf
+   
+
     k11 = k
     k = k[:, None]
-    jq = q**2 * wq / (4. * jnp.pi**2)
-
+    jq = q**2 * wq / (4. * np.pi**2)
+    # Get q quadrature points and weights
     
-    mus, wmus = jax_leggauss(jnp.arange(20))
-    mus = 0.5 * (mus + 1) * 2 - 1
+
+    mus, wmus = jax_leggauss(jnp.arange(n_gauss))
 
     # Compute P22
+    jax.debug.print("sizes {} {} {}", q.shape, pk_q.shape, k11.shape)
     pk_k = jnp.interp(k11, q, pk_q)
 
     def get_pk22_dd(mu, wmu):
@@ -1479,31 +1510,10 @@ def pt_pk_1loop(k, q, wq, pk_q, kernel13_d):
     pk22_dd = jnp.sum(jax.vmap(get_pk22_dd)(mus, wmus), axis=0)
     pk11 = pk_k
     pk13_dd = 2. * jnp.sum(kernel13_d * pk_q, axis=-1) * pk_k
-    pk_dd = pk11 + pk22_dd + pk13_dd
-    return pk_dd
+    return pk11, pk22_dd,  pk13_dd
 
+@jax.jit
 def weights_trapz(x):
-    """
-    Return weights for trapezoidal integration.
-    
-    Adapted from desilike.utils.
-
-    Parameters
-    ----------
-    x : jnp.ndarray
-        Abscissa points (must be sorted).
-
-    Returns
-    -------
-    jnp.ndarray
-        Integration weights for trapezoidal rule.
-    
-    Notes
-    -----
-    - Handles edge cases (empty arrays, single points, two points)
-    - For N points: weights = (Δx_{i-1} + Δx_i) / 2
-    """
-    #From desilike.utils
     """Return weights for trapezoidal integration."""
     if x.size == 0:
         return np.array(1.)
@@ -1512,3 +1522,4 @@ def weights_trapz(x):
     if x.size == 2:
         return np.ones(x.size) / 2. * (x[1] - x[0])
     return jnp.insert(x[2:] - x[:-2], jnp.array([0, len(x) - 1]), jnp.array([x[1] - x[0], x[-1] - x[-2]])) / 2.
+

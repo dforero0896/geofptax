@@ -21,7 +21,10 @@ redshift = 0.5
 k = np.array(P_template[:,0])
 kp = np.array(P_template)[:-2,0]
 h = 0.667
+print(cosm_par[0])
 cosmo_jax = jc.Cosmology(Omega_c=0.1200 / h**2, Omega_b=0.02237 / h**2, h=h, sigma8 = cosm_par[0], n_s=0.9649,
+                    Omega_k=0., w0=-1., wa=0.)
+cosmo_jax = jc.Cosmology(Omega_c=0.1200 / h**2, Omega_b=0.02237 / h**2, h=h, sigma8 = 0.81, n_s=0.9649,
                     Omega_k=0., w0=-1., wa=0.)
 nlmpk = np.array(jc.power.nonlinear_matter_power(cosmo_jax, k, a=1. / (1 + 0.))[:-2]).astype(np.double)
 tic = time.time()
@@ -29,7 +32,7 @@ tic = time.time()
 
 
 
-k_ev = np.linspace(0.01,0.12, num = 40) 
+k_ev = np.linspace(0.01,0.3, num = 40) 
 k_ev_bk=np.vstack([k_ev,k_ev]).T   # List of pairs of k. (B=B(k1,k2))
 k1k2pairs=k_ev_bk
 
@@ -71,14 +74,23 @@ from geofptax.kernels import weights_trapz, pt_kernel, pt_pk_1loop
 from geofptax import folps
 inputpkT = np.loadtxt('test_data/pk_linear.txt', unpack = True)
 print(inputpkT.shape)
-kt = inputpkT[0]
-q = kt
-ktmin, ktmax = min(kk.min() for kk in kt) * 0.7, max(kk.max() for kk in kt) * 1.3
-kt = jnp.linspace(ktmin, ktmax, 100)
+
 kt = jnp.linspace(0.0001, 0.55, 1000)
+#kt = jnp.geomspace(1e-3, 2, 100)
+q = kt
+lmpk = np.array(jc.power.linear_matter_power(cosmo_jax, kt, a=1. / (1 + 0.))).astype(np.double)
 wq = weights_trapz(q)
 kernel = pt_kernel(kt, q, wq)
-pkt = pt_pk_1loop(kt, q, wq, inputpkT[1], kernel)
+pkt = sum(pt_pk_1loop(kt, q, wq, lmpk, kernel))
+_ax[3].plot(kt, kt * pkt, label = "1loop EH")
+_ax[3].plot(kt, kt * lmpk, label = "jc lin")
+
+
+
+q = inputpkT[0]
+wq = weights_trapz(q)
+kernel = pt_kernel(kt, q, wq)
+pkt = sum(pt_pk_1loop(kt, q, wq, inputpkT[1], kernel))
 
 _ax[3].plot(kt, kt * pkt, label = "1loop")
 _ax[3].plot(kp,kp * nlmpk, label = "at 0.5")
@@ -103,8 +115,7 @@ alphashot0 = 0;
 alphashot2 = 0;            
 PshotP = 1.    # =1/barn.  Poissonian shot noise
 Bshot = 1.
-cosmo_jax = jc.Cosmology(Omega_c=0.1200 / h**2, Omega_b=0.02237 / h**2, h=h, sigma8 = 0.81, n_s=0.9649,
-                    Omega_k=0., w0=-1., wa=0.)
+
 
 print(cosmo_jax.sigma8,jc.background.growth_rate(cosmo_jax, jnp.atleast_1d(1.)))
 cosm_par = jnp.array([cosmo_jax.sigma8,jc.background.growth_rate(cosmo_jax, jnp.atleast_1d(1.))[0],1.,1.,b1,b2,PshotP,X_FoG,Bshot,X_FoG_bk])
@@ -242,7 +253,7 @@ def train_bispectrum_model(
             redshift=redshift, num_points=num_points
         )
         # Mean squared error on monopole
-        mask = k_ev_C < 0.11
+        mask = k_ev_C < 0.12
         mse = jnp.mean(((jnp.log(bk['000']) - jnp.log(B000_C)) * mask) ** 2)
         mse += jnp.mean(((jnp.log(bk['202']) - jnp.log(B202_C)) * mask) ** 2)
         return mse
