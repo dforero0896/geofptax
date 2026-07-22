@@ -370,10 +370,10 @@ def z1_ker(mu, cosm_par):
     Examples
     --------
     >>> mu = 0.5
-    >>> cosm_par = jnp.array([...])  # Contains b₁ at index 4, f at index 1
+    >>> cosm_par = jnp.array([...])  # Contains b₁ at index 3, f at index 0
     >>> z1_ker(mu, cosm_par)
     """
-    b1, ff = cosm_par[4], cosm_par[1]
+    b1, ff = cosm_par[3], cosm_par[0]
     return b1 + ff * mu**2
 
 
@@ -402,9 +402,10 @@ def z2_ker(ka, kb, kc, fkern, gkern, mua, mub, cosm_par):
         Cosine of the angle between kb and the line of sight.
     cosm_par : jnp.ndarray
         Cosmological parameters array, where:
-        - cosm_par[4] is the linear bias (b₁)
-        - cosm_par[1] is the growth rate (f)
-        - cosm_par[5] is the second-order bias (b₂)
+        - cosm_par[3] is the linear bias (b₁)
+        - cosm_par[0] is the growth rate (f)
+        - cosm_par[4] is the second-order bias (b₂)
+        - cosm_par[5] is the tidal bias (bs)
 
     Returns
     -------
@@ -428,13 +429,13 @@ def z2_ker(ka, kb, kc, fkern, gkern, mua, mub, cosm_par):
     """
     cab = cosab(ka, kb, kc)
     
-    b1, ff, b2 = cosm_par[4], cosm_par[1], cosm_par[5]
+    b1, ff, b2, bs = cosm_par[3], cosm_par[0], cosm_par[4], cosm_par[5]
 
     ksq = jnp.sqrt(ka**2 + kb**2 + 2 * ka * kb * cab)  # modulus of vector sum k1 + k2
     mu12 = (ka * mua + kb * mub) / ksq
     
     # TODO: relax condition on bs and make it a parameter.
-    bs = -4.0 / 7.0 * (b1 - 1.0)
+    
     s2 = cab**2 - 1.0 / 3.0  # S_2 kernel
 
     b1_terms = b1 * (fkern + 0.5 * ff * mu12 * ksq * (mua / ka + mub / kb))
@@ -646,12 +647,13 @@ def bkeff_r_scalar(mua_m, phi, tr, cosm_par, pk_in, sig_fog, log_km, log_pkm, af
         Triangle side lengths (ka_m, kb_m, kc_m) in real space.
     cosm_par : jnp.ndarray
         Cosmological parameters array containing:
-        - cosm_par[2]: α_∥ (parallel AP parameter)
-        - cosm_par[3]: α_⟂ (perpendicular AP parameter)
-        - cosm_par[1]: f (growth rate)
-        - cosm_par[4]: b₁ (linear bias)
-        - cosm_par[5]: b₂ (quadratic bias)
-        - cosm_par[9]: σ_FoG (Finger-of-God damping scale)
+        - cosm_par[1]: α_∥ (parallel AP parameter)
+        - cosm_par[2]: α_⟂ (perpendicular AP parameter)
+        - cosm_par[0]: f (growth rate)
+        - cosm_par[3]: b₁ (linear bias)
+        - cosm_par[4]: b₂ (quadratic bias)
+        - cosm_par[5]: bs (tidal bias)
+        - cosm_par[8]: σ_FoG (Finger-of-God damping scale)
     pk_in : tuple or jnp.ndarray
         Power spectrum values at ka_m, kb_m, kc_m.
     sig_fog : float
@@ -696,11 +698,11 @@ def bkeff_r_scalar(mua_m, phi, tr, cosm_par, pk_in, sig_fog, log_km, log_pkm, af
     pka, pkb, pkc = pk_in
     spline_me = lambda logk: jnp.interp(logk, log_km, log_pkm)
     
-    alpa, alpe = cosm_par[2], cosm_par[3]
+    alpa, alpe = cosm_par[1], cosm_par[2]
     Fsq = 1.0 / (alpa / alpe)**2
-    b1, ff = cosm_par[4], cosm_par[1]
-    A_P = cosm_par[6] - 1  # Power spectrum shot noise
-    A_B = cosm_par[8] - 1  # Bispectrum shot noise
+    b1, ff = cosm_par[3], cosm_par[0]
+    A_P = cosm_par[6]  # Power spectrum shot noise
+    A_B = cosm_par[7]  # Bispectrum shot noise
     cab_m = cosab(ka_m, kb_m, kc_m)
     mub_m = mua_m * cab_m - jnp.sqrt((1.0 - mua_m**2) * (1.0 - cab_m**2)) * jnp.cos(phi)
     muc_m = (-ka_m * mua_m - kb_m * mub_m) / kc_m
@@ -761,9 +763,9 @@ def bkeff_r_scalar(mua_m, phi, tr, cosm_par, pk_in, sig_fog, log_km, log_pkm, af
                   (b1 * A_B + 2.0 * A_P * ff * muc**2) * z1_3 * pkc +
                   A_P**2)
 
-    return valid * result #jnp.where(valid, result, 0.0)
-    #result += leg * shot_noise / (2 * jnp.pi * alpa**2 * alpe**4)
-    #return result
+    #return valid * result #jnp.where(valid, result, 0.0)
+    result += leg * shot_noise / (2 * jnp.pi * alpa**2 * alpe**4)
+    return valid * result
 
 bkeff_r_vmap = jax.vmap(bkeff_r_scalar, in_axes=(0, 0, None, None, None, None, None, None, None, None))
 
@@ -958,7 +960,7 @@ def ext_bk_mp(tr, tr2, tr3, tr4, log_km, log_pkm, cosm_par, redshift, fi_vals=F_
     spline_me = lambda logk: jnp.interp(logk, log_km, log_pkm)
 
     # Finger-of-God damping factor
-    sig_fog = cosm_par[9]
+    sig_fog = cosm_par[8]
 
     # Integration limits
     xmin = [-1.0, 0.0]
@@ -1080,8 +1082,8 @@ def geo_fac_sugiyama_simple(k1, k2, x12, af, hh=1.0):
     k3 = jnp.sqrt(k1**2 + k2**2 + 2 * k1 * k2 * x12)
     
     # Call original geo_fac
-    #return geo_fac_pade(k1, k2, k3, af, hh)
-    return geo_fac(k1, k2, k3, af, hh)
+    return geo_fac_pade(k1, k2, k3, af, hh)
+    #return geo_fac(k1, k2, k3, af, hh)
 
 
 # Vectorized version
@@ -1134,11 +1136,11 @@ def bkeff_sugiyama(k1, k2, x12, mu1, phi, cosm_par, pk_interp,
     - All control flow replaced with JAX operations for JIT compatibility
     """
     # Extract parameters
-    alpa, alpe = cosm_par[2], cosm_par[3]
-    b1, ff = cosm_par[4], cosm_par[1]
-    sig_fog = cosm_par[9]  # σ_B
+    alpa, alpe = cosm_par[1], cosm_par[2]
+    b1, ff = cosm_par[3], cosm_par[0]
+    sig_fog = cosm_par[8]  # σ_B
     A_P = cosm_par[6]      # Power spectrum shot noise
-    A_B = cosm_par[8]      # Bispectrum shot noise
+    A_B = cosm_par[7]      # Bispectrum shot noise
     
     Fsq = 1.0 / (alpa / alpe)**2
     
@@ -1453,14 +1455,39 @@ def pt_kernel(k, q, wq):
     x = q / k[:, None]
     
     def kernel_ff(x):
-        toret = (6./x**2 - 79. + 50.*x**2 - 21.*x**4 + 
-                0.75*(1./x - x)**3*(2. + 7.*x**2)*2*jnp.log(jnp.abs((x - 1.)/(x + 1.))))/504.
-        mask = x > 10.
-        toret = jnp.where(mask, -61./630. + 2./105./x**2 - 10./1323./x**4, toret)
-        dx = x - 1.
-        mask = jnp.abs(dx) < 0.01
-        return jnp.where(mask, -11./126. + dx/126. - 29./252.*dx**2, toret)/x**2
-
+        # 1. Protect against x = 0 and x = -1 (division by zero)
+        # We replace 0 with 1.0 for the safe evaluation of the internal branches.
+        x_safe = jnp.where(jnp.abs(x) < 1e-15, 1.0, x)
+        denom_safe = jnp.where(jnp.abs(x_safe + 1.0) < 1e-15, 1.0, x_safe + 1.0)
+        
+        # 2. Protect the argument of the logarithm from being exactly 0
+        # When x=1, (x-1)/(x+1) = 0, and log(0) = -Inf. 
+        # Clamping to 1e-15 prevents the 0 * -Inf = NaN issue in JAX.
+        log_arg = jnp.abs((x_safe - 1.0) / denom_safe)
+        log_arg_safe = jnp.maximum(log_arg, 1e-15)
+        
+        # 3. Compute the main branch safely
+        term1 = 6.0 / x_safe**2 - 79.0 + 50.0 * x_safe**2 - 21.0 * x_safe**4
+        term2 = 0.75 * (1.0 / x_safe - x_safe)**3 * (2.0 + 7.0 * x_safe**2) * 2.0 * jnp.log(log_arg_safe)
+        
+        toret = (term1 + term2) / 504.0
+        
+        # 4. Apply asymptotic expansion for x > 10 safely
+        mask_large = x > 10.0
+        toret_large = -61.0/630.0 + 2.0/105.0/x_safe**2 - 10.0/1323.0/x_safe**4
+        toret = jnp.where(mask_large, toret_large, toret)
+        
+        # 5. Apply Taylor expansion near x = 1 safely
+        dx = x - 1.0
+        mask_small = jnp.abs(dx) < 0.01
+        toret_small = -11.0/126.0 + dx/126.0 - 29.0/252.0*dx**2
+        toret = jnp.where(mask_small, toret_small, toret)
+        
+        # 6. Final division by x^2 safely
+        # Prevents division by zero if x=0. 
+        x_sq_safe = jnp.maximum(x**2, 1e-30)
+        
+        return toret / x_sq_safe
     return 2 * jq * kernel_ff(x)
 
 @partial(jax.jit, static_argnames = ('n_gauss'))
@@ -1495,7 +1522,7 @@ def pt_pk_1loop(k, q, wq, pk_q, kernel13_d, n_gauss=20):
     mus, wmus = jax_leggauss(jnp.arange(n_gauss))
 
     # Compute P22
-    jax.debug.print("sizes {} {} {}", q.shape, pk_q.shape, k11.shape)
+    #jax.debug.print("sizes {} {} {}", q.shape, pk_q.shape, k11.shape)
     pk_k = jnp.interp(k11, q, pk_q)
 
     def get_pk22_dd(mu, wmu):

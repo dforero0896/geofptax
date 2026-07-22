@@ -1,7 +1,6 @@
 # setup.py
 from setuptools import setup, Extension, find_packages
-from Cython.Build import cythonize
-import Cython.Compiler.Options
+
 #Cython.Compiler.Options.annotate = True
 import numpy as np
 import os, sys, glob, subprocess
@@ -11,6 +10,8 @@ do_ext = os.environ.get('GEOFPT_CEXT') == '1'
 
 
 if do_ext:
+    from Cython.Build import cythonize
+    import Cython.Compiler.Options
     print("Compiling C version of Geo-FPT too.", flush=True)
     gsl_includes = [f.replace("\n", "") for f in subprocess.run(['gsl-config', '--cflags'], stdout=subprocess.PIPE).stdout.decode('utf-8').split(" ")]
 
