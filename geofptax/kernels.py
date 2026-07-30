@@ -568,29 +568,20 @@ def geo_fac_damped(ka, kb, kc, af, hh, k_damp=0.12, width=5.):
 
 def geo_fac_pade(ka, kb, kc, af, hh, A_peak=6.235):
     """
-    GEO-FPT factor with Padé [1/2] approximant for area terms.
+    GEO-FPT factor with Padé [2/2] approximant for area terms.
     
-    Parameters:
-    -----------
-    ka, kb, kc : float or jnp.ndarray
-        Triangle side lengths (real space, in h/Mpc).
-    af : jnp.ndarray
-        Array of 5 GEO-FPT coefficients: [f1, f2, f3, f4, f5].
-    hh : float
-        Hubble parameter (normalization).
-    A_peak : float, optional
-        Characteristic area (in units of A_norm) where the correction peaks.
-        Default is 6.235, corresponding to equilateral triangle with k=0.12 h/Mpc.
-    
-    Returns:
-    --------
-    extra : float or jnp.ndarray
-        The GEO-FPT correction factor.
+    The area term is constructed to:
+    1. Match the polynomial f4*A + f5*A^2 at low A (small k).
+    2. Asymptote to a constant at high A (large k) such that the 
+       FULL GEO-FPT factor asymptotes to 1.0. 
+       (This ensures the geometric correction smoothly turns off at high k, 
+       leaving the standard SPT kernel).
+    3. Have a strictly positive denominator (no real roots) to prevent divergence.
     """
     # Unpack coefficients
     f1, f2, f3, f4, f5 = af
     
-    # Compute triangle area (normalized by A_norm = 0.001 (h/Mpc)^2)
+    # Compute triangle area (normalized)
     perim = (ka + kb + kc) / 2
     area_sq = perim * (perim - ka) * (perim - kb) * (perim - kc)
     area = jnp.sqrt(jnp.maximum(area_sq, 1e-20)) / (hh**2 * 0.001)
@@ -605,22 +596,40 @@ def geo_fac_pade(ka, kb, kc, af, hh, A_peak=6.235):
     cosmed = (kmax**2 + kmin**2 - kmed**2) / (2 * kmax * kmin)
     cosmin = (kmax**2 + kmed**2 - kmin**2) / (2 * kmax * kmed)
     
-    # Padé [1/2] parameters
+    # Shape contribution (independent of area A)
+    shape_term = (f1 + 
+                  f2 * jnp.where(jnp.abs(cosmin) > 1e-10, cosmed/cosmin, 0.0) + 
+                  f3 * jnp.where(jnp.abs(cosmin) > 1e-10, cosmax/cosmin, 0.0))
+    
+    # We want the FULL factor (shape_term + area_terms) to asymptote to 1.0 as A -> inf.
+    # Therefore, the area_terms must asymptote to (1.0 - shape_term).
+    A_target = 1.0 - shape_term
+    
+    # Padé [2/2] form: (p1*A + p2*A^2) / (1 + q1*A + q2*A^2)
+    # 1. Low A matches f4*A + f5*A^2 => p1 = f4, p2 = f5 + f4*q1
+    # 2. High A asymptotes to A_target => q2 = p2 / A_target
+    # 3. No real roots => q1^2 - 4*q2 < 0
+    
     p1 = f4
-    q1 = -f5 / f4
-    q2 = 1.0 / (A_peak**2)   # alternative: q2 = (f5/f4)**2 for zero cubic term
+    
+    # Choosing q1 = 2*f4 minimizes the discriminant to -4*(f4^2 + f5)/A_target.
+    # As long as f4^2 + f5 > 0 and A_target > 0, the denominator never crosses zero.
+    q1 = 2.0 * f4
+    p2 = f5 + f4 * q1
+    
+    # Protect against A_target <= 0 (which would make q2 negative and cause poles).
+    # If A_target <= 0, we fallback to a small positive value (effectively damping to 0).
+    A_target_safe = jnp.maximum(A_target, 1e-6)
+    
+    q2 = p2 / A_target_safe
     
     # Padé approximant for area terms
-    area_terms = (p1 * area) / (1.0 + q1 * area + q2 * area**2)
+    area_terms = (p1 * area + p2 * area**2) / (1.0 + q1 * area + q2 * area**2)
     
     # Complete GEO-FPT factor
-    extra = (f1 + 
-             f2 * jnp.where(jnp.abs(cosmin) > 1e-10, cosmed/cosmin, 0.0) + 
-             f3 * jnp.where(jnp.abs(cosmin) > 1e-10, cosmax/cosmin, 0.0) + 
-             area_terms)
+    extra = shape_term + area_terms
     
     return extra
-
 
 # Vectorized versions of the functions
 g2_ker_vec = jax.vmap(g2_ker, (0, 0, 0))
@@ -1050,7 +1059,7 @@ def bk_multip(tr, tr2, tr3, tr4, kp, pk, cosm_par, redshift, num_points=10, fi_v
 ######### Sugiyama estimator #################
 # Basically taken from FolpsD https://github.com/alejandroaviles/folpsD/blob/main/FOLPSD.py
 
-def geo_fac_sugiyama_simple(k1, k2, x12, af, hh=1.0):
+def geo_fac_sugiyama_simple(k1, k2, x12, af, hh=1.0, geo_expansion = 'poly'):
     """
     Compute GEO-FPT factor for given triangle geometry (Sugiyama version).
     
@@ -1082,17 +1091,21 @@ def geo_fac_sugiyama_simple(k1, k2, x12, af, hh=1.0):
     k3 = jnp.sqrt(k1**2 + k2**2 + 2 * k1 * k2 * x12)
     
     # Call original geo_fac
-    return geo_fac_pade(k1, k2, k3, af, hh)
-    #return geo_fac(k1, k2, k3, af, hh)
+    if geo_expansion == 'pade':
+        return geo_fac_pade(k1, k2, k3, af, hh)
+    elif geo_expansion == 'poly':
+        return geo_fac(k1, k2, k3, af, hh)
+    else:
+        raise ValueError(f"GeoFPT expansion {geo_expansion} not recognized.")
 
 
 # Vectorized version
 geo_fac_sugiyama_simple_vec = jax.vmap(geo_fac_sugiyama_simple, 
-                                       in_axes=(0, 0, 0, None, None))
+                                       in_axes=(0, 0, 0, None, None, None))
 
 
 def bkeff_sugiyama(k1, k2, x12, mu1, phi, cosm_par, pk_interp, 
-                   log_km, log_pkm, af, mp=None, hh=1.0):
+                   log_km, log_pkm, af, mp=None, hh=1.0, geo_expansion = 'poly'):
     """
     JAX-compatible Sugiyama bispectrum integrand.
     
@@ -1161,7 +1174,7 @@ def bkeff_sugiyama(k1, k2, x12, mu1, phi, cosm_par, pk_interp,
     muc_rs = muc_m * alpe / (alpa * jnp.sqrt(1.0 + muc_m**2 * (Fsq - 1.0)))
     
     # 2. Compute GEO-FPT factor
-    eff_fact = geo_fac_sugiyama_simple(k1, k2, x12, af, hh)
+    eff_fact = geo_fac_sugiyama_simple(k1, k2, x12, af, hh, geo_expansion)
     
     # 3. Apply FoG damping (using σ_B = cosm_par[9])
     k_par_sq_sum = (k1_rs * mu1_rs)**2 + (k2_rs * mu2_rs)**2 + (k3_rs * muc_rs)**2
@@ -1228,7 +1241,7 @@ def bkeff_sugiyama(k1, k2, x12, mu1, phi, cosm_par, pk_interp,
     return result
 # Vectorized version
 bkeff_sugiyama_vec = jax.vmap(bkeff_sugiyama, 
-                             in_axes=(None, None, 0, 0, 0, None, None, None, None, None, None, None))
+                             in_axes=(None, None, 0, 0, 0, None, None, None, None, None, None, None, None))
 
 
 def compute_basis_grid(x_pts, mu_pts, phi_pts):
@@ -1293,7 +1306,7 @@ def compute_basis_grid(x_pts, mu_pts, phi_pts):
 
 
 def compute_sugiyama_multipoles(k1k2_pairs, log_km, log_pkm, cosm_par, redshift,
-                                      fi_vals=F_VALS_FULL, num_points=50):
+                                      fi_vals=F_VALS_FULL, num_points=50, geo_expansion = 'poly'):
     """
     Compute Sugiyama coefficients using scalar functions and proper vmap.
     
@@ -1371,7 +1384,7 @@ def compute_sugiyama_multipoles(k1k2_pairs, log_km, log_pkm, cosm_par, redshift,
         # Note: we vmap over the flattened grid, not over k1, k2
         B_flat = bkeff_sugiyama_vec(
             k1, k2, x_flat, mu_flat, phi_flat,
-            cosm_par, pk_interp, log_km, log_pkm, af, None, 1.0
+            cosm_par, pk_interp, log_km, log_pkm, af, None, 1.0, geo_expansion,
         )
         
         # Reshape back to 3D
@@ -1398,7 +1411,8 @@ def compute_sugiyama_multipoles(k1k2_pairs, log_km, log_pkm, cosm_par, redshift,
     
     return normalized_coeffs.T
 
-def bk_sugiyama_multip(k1, k2, kp, pk, cosm_par, redshift, num_points=10, fi_vals=F_VALS_FULL):
+def bk_sugiyama_multip(k1, k2, kp, pk, cosm_par, redshift, num_points=10, fi_vals=F_VALS_FULL,
+                       geo_expansion = 'poly'):
     """
     Compute Sugiyama multipole coefficients for given (k1, k2) pairs.
     
@@ -1442,7 +1456,8 @@ def bk_sugiyama_multip(k1, k2, kp, pk, cosm_par, redshift, num_points=10, fi_val
     k1k2_pairs=jnp.vstack([k1,k2]).T
     bk = compute_sugiyama_multipoles(k1k2_pairs, jnp.log10(kp), jnp.log10(pk), cosm_par, 
                                           redshift, fi_vals=fi_vals, 
-                                          num_points=num_points)
+                                          num_points=num_points,
+                                          geo_expansion = geo_expansion)
     labels = ['000', '110', '220', '202', '022', '112']
     return dict(zip(labels, bk))
 
