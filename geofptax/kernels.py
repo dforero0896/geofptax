@@ -1297,12 +1297,23 @@ def compute_basis_grid(x_pts, mu_pts, phi_pts):
         3.0 * (1.0 - M**2) * (1.0 - X**2) * cos2phi
     )
     
+    # Corrected b112 to match angdep_integrands:
+    # second term uses 3 * sqrt(3) instead of 6
     b112 = (3 * jnp.sqrt(2.5) / (8 * jnp.pi)) * (
         jnp.sqrt(3) * (-1.0 + 3.0 * M**2) * X +
-        6.0 * M * sqrt1_mu2 * sqrt1_x2 * cosphi
+        3.0 * jnp.sqrt(3) * M * sqrt1_mu2 * sqrt1_x2 * cosphi
     )
+
+    b222 = (
+        25 * jnp.sqrt(70) * (
+            1 - 3 * M**2 * X**2
+            - 3 * M * X * sqrt1_mu2 * sqrt1_x2 * cosphi
+            - 1.5 * (1 - M**2) * (1 - X**2) * (1 - cos2phi)
+        )
+    ) / (112 * jnp.pi)
     
-    return jnp.stack([b000, b110, b220, b202, b022, b112], axis=0)
+    return jnp.stack([b000, b110, b220, b202, b022, b112, b222], axis=0)
+
 
 
 def compute_sugiyama_multipoles(k1k2_pairs, log_km, log_pkm, cosm_par, redshift,
@@ -1340,7 +1351,7 @@ def compute_sugiyama_multipoles(k1k2_pairs, log_km, log_pkm, cosm_par, redshift,
     -----
     - Implements the Sugiyama estimator from arXiv:1903.09172
     - Uses 3D Gauss-Legendre quadrature over (x, μ, φ)
-    - Returns coefficients: [B000, B110, B220, B202, B022, B112]
+    - Returns coefficients: [B000, B110, B220, B202, B022, B112, B222]
     - H-factors from FOLPSD are applied for correct normalization
     """
     # Setup
@@ -1391,8 +1402,8 @@ def compute_sugiyama_multipoles(k1k2_pairs, log_km, log_pkm, cosm_par, redshift,
         B_3d = B_flat.reshape(X.shape)
         
         # Compute coefficients by integrating with basis functions
-        coeffs = jnp.zeros(6)
-        for i in range(6):
+        coeffs = jnp.zeros(7)
+        for i in range(7):
             # Multiply by basis function and integrate
             integrand = B_3d * basis_grid[i]
             coeffs = coeffs.at[i].set(jnp.sum(integrand * W_total))
@@ -1405,7 +1416,7 @@ def compute_sugiyama_multipoles(k1k2_pairs, log_km, log_pkm, cosm_par, redshift,
     # Apply normalization factors (H factors from FOLPSD)
     H_factors = jnp.array([1.0, -1.0/jnp.sqrt(3.0), 1.0/jnp.sqrt(5.0),
                            1.0/jnp.sqrt(5.0), 1.0/jnp.sqrt(5.0), 
-                           jnp.sqrt(2.0/15.0)])
+                           jnp.sqrt(2.0/15.0), -2 / jnp.sqrt(70)])
     
     normalized_coeffs = all_coeffs * H_factors
     
@@ -1440,7 +1451,7 @@ def bk_sugiyama_multip(k1, k2, kp, pk, cosm_par, redshift, num_points=10, fi_val
     Returns
     -------
     dict
-        Dictionary with keys: '000', '110', '220', '202', '022', '112'
+        Dictionary with keys: '000', '110', '220', '202', '022', '112', '222'
         containing the corresponding Sugiyama coefficients.
     
     Examples
@@ -1458,7 +1469,7 @@ def bk_sugiyama_multip(k1, k2, kp, pk, cosm_par, redshift, num_points=10, fi_val
                                           redshift, fi_vals=fi_vals, 
                                           num_points=num_points,
                                           geo_expansion = geo_expansion)
-    labels = ['000', '110', '220', '202', '022', '112']
+    labels = ['000', '110', '220', '202', '022', '112', '222']
     return dict(zip(labels, bk))
 
 
