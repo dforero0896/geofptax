@@ -488,6 +488,8 @@ def geo_fac(ka, kb, kc, af, hh):
     >>> hh = 0.7
     >>> geo_fac(ka, kb, kc, af, hh)
     """
+
+    ka, kb, kc = jnp.broadcast_arrays(ka, kb, kc)
     # Determine kmax, kmed, kmin
     k = jnp.array([ka, kb, kc])
     kmax = jnp.max(k, axis = 0)
@@ -578,6 +580,7 @@ def geo_fac_pade(ka, kb, kc, af, hh, A_peak=6.235):
        leaving the standard SPT kernel).
     3. Have a strictly positive denominator (no real roots) to prevent divergence.
     """
+    ka, kb, kc = jnp.broadcast_arrays(ka, kb, kc)
     # Unpack coefficients
     f1, f2, f3, f4, f5 = af
     
@@ -1316,7 +1319,7 @@ def compute_basis_grid(x_pts, mu_pts, phi_pts):
 
 
 
-def compute_sugiyama_multipoles(k1k2_pairs, log_km, log_pkm, cosm_par, redshift,
+def __compute_sugiyama_multipoles(k1k2_pairs, log_km, log_pkm, cosm_par, redshift,
                                       fi_vals=F_VALS_FULL, num_points=50, geo_expansion = 'poly'):
     """
     Compute Sugiyama coefficients using scalar functions and proper vmap.
@@ -1422,6 +1425,247 @@ def compute_sugiyama_multipoles(k1k2_pairs, log_km, log_pkm, cosm_par, redshift,
     
     return normalized_coeffs.T
 
+
+def compute_sugiyama_multipoles(k1k2_pairs, log_km, log_pkm, cosm_par, redshift,
+                                fi_vals=F_VALS_FULL, num_points=50, geo_expansion='poly'):
+    """
+    Compute Sugiyama bispectrum multipole coefficients using a memory-efficient
+    broadcasting approach.
+
+    This function evaluates the 7 Sugiyama multipole coefficients
+    (B000, B110, B220, B202, B022, B112, B222) for a set of (k1, k2) triangle
+    configurations. It implements the angular integration of the effective
+    bispectrum against the Sugiyama basis functions using 3D Gauss-Legendre
+    quadrature over (x, μ, φ).
+
+    Memory-Efficient Design
+    -----------------------
+    Unlike the previous implementation which used `jnp.meshgrid` to build dense
+    3D coordinate arrays and flattened them for `vmap`, this version uses
+    **broadcasting** to represent the quadrature grid with virtually zero
+    memory overhead:
+
+        x_b  : shape (Nx, 1, 1)
+        mu_b : shape (1, Nmu, 1)
+        phi_b: shape (1, 1, Nphi)
+
+    The basis functions and the bispectrum integrand are computed on these
+    broadcasted grids, and the 3D integral is performed **sequentially**
+    (φ → μ → x), collapsing one dimension at a time. This guarantees that
+    intermediate arrays shrink progressively (Nx·Nmu·Nphi → Nx·Nmu → Nx),
+    avoiding the allocation of a full 4D weighted tensor.
+
+    Only `jax.vmap` over the (k1, k2) pairs is used — there is no nested
+    vmap over the angular grid points, which keeps the JAX trace compact
+    and compilation fast.
+
+    Parameters
+    ----------
+    k1k2_pairs : jnp.ndarray
+        Array of shape (N_pairs, 2) containing the (k1, k2) wavevector
+        magnitudes (in h/Mpc) defining each triangle configuration.
+    log_km : jnp.ndarray
+        1D array of log10(k) values at which the input power spectrum is
+        tabulated. Used for interpolation inside the integrand.
+    log_pkm : jnp.ndarray
+        1D array of log10(P(k)) values corresponding to `log_km`.
+    cosm_par : jnp.ndarray
+        Cosmological and bias parameter array of length 9:
+            [f, α_∥, α_⊥, b1, b2, bs, A_P, A_B, σ_FoG]
+        where f is the linear growth rate, α_∥/α_⊥ are the Alcock-Paczynski
+        parameters, b1/b2/bs are the linear, quadratic and tidal biases,
+        A_P/A_B are the power-spectrum and bispectrum shot-noise amplitudes,
+        and σ_FoG is the Finger-of-God damping scale.
+    redshift : float
+        Redshift at which the bispectrum is evaluated. Used to interpolate
+        the GEO-FPT coefficients from `fi_vals`.
+    fi_vals : jnp.ndarray, optional
+        Tabulated GEO-FPT kernel coefficients at the reference scale factors
+        used by `interpol_ker`. Default is `F_VALS_FULL` from `constants.py`.
+    num_points : int, optional
+        Number of Gauss-Legendre quadrature points per angular dimension
+        (x, μ, φ). The total number of evaluation points per triangle is
+        `num_points**3`. Default is 50.
+    geo_expansion : {'poly', 'pade'}, optional
+        Type of GEO-FPT geometric correction to apply:
+            - 'poly' : standard polynomial form (default).
+            - 'pade' : Padé [2/2] approximant that smoothly turns off the
+              correction at high k.
+
+    Returns
+    -------
+    jnp.ndarray
+        Array of shape (7, N_pairs) containing the normalized Sugiyama
+        multipole coefficients for each triangle. The rows correspond to
+        [B000, B110, B220, B202, B022, B112, B222], each multiplied by
+        the standard H-factors from FOLPSD:
+            H = [1, -1/√3, 1/√5, 1/√5, 1/√5, √(2/15), -2/√70]
+
+    Notes
+    -----
+    - The angular integration uses the factorization of the tensor-product
+      Gauss-Legendre weights: W_{ijk} = w_x^i · w_μ^j · w_φ^k. This allows
+      the 3D sum to be decomposed into three sequential 1D sums, each
+      collapsing one dimension.
+    - The basis functions are computed on the fly from the broadcasted 1D
+      grids rather than being precomputed on a dense 3D mesh. Each basis
+      function retains its minimal shape (e.g. b110 is (Nx, 1, 1)) until
+      multiplied by the bispectrum, at which point JAX's broadcasting
+      handles the expansion without allocating the full grid.
+    - The function is compatible with `jax.jit` and `jax.grad` for use
+      inside likelihood pipelines.
+
+    See Also
+    --------
+    bkeff_sugiyama : Core bispectrum integrand evaluated on the angular grid.
+    bk_sugiyama_multip : High-level wrapper returning a dictionary of
+        multipole coefficients.
+    jax_leggauss : Gauss-Legendre quadrature nodes and weights.
+
+    Examples
+    --------
+    >>> import jax.numpy as jnp
+    >>> k1k2 = jnp.array([[0.1, 0.1], [0.1, 0.2], [0.2, 0.2]])
+    >>> log_km = jnp.log10(jnp.logspace(-3, 1, 500))
+    >>> log_pkm = jnp.log10(Pk_linear)  # some tabulated P(k)
+    >>> cosm_par = jnp.array([0.8, 1.0, 1.0, 1.5, 0.5, -0.1, 1.0, 1.0, 4.0])
+    >>> coeffs = compute_sugiyama_multipoles(
+    ...     k1k2, log_km, log_pkm, cosm_par, redshift=0.5, num_points=20
+    ... )
+    >>> coeffs.shape
+    (7, 3)
+    """
+    a_t = 1.0 / (1.0 + redshift)
+    af = interpol_ker(a_t, fi_vals)
+
+    # 1D quadrature
+    x_pts, x_wts = jax_leggauss(jnp.arange(num_points))
+    mu_pts, mu_wts = jax_leggauss(jnp.arange(num_points))
+    phi_pts, phi_wts = jax_leggauss(jnp.arange(num_points))
+    phi_pts = 0.5 * (phi_pts + 1) * (2 * jnp.pi)
+    phi_wts = phi_wts * jnp.pi
+
+    # Broadcasted 1D grids — virtually zero memory
+    x_b  = x_pts[:, None, None]    # (Nx, 1, 1)
+    mu_b = mu_pts[None, :, None]   # (1, Nmu, 1)
+    phi_b = phi_pts[None, None, :] # (1, 1, Nphi)
+
+    # 1D weights for sequential integration
+    wx = x_wts                     # (Nx,)
+    wmu = mu_wts                   # (Nmu,)
+    wphi = phi_wts                 # (Nphi,)
+
+    # Precompute trig on broadcasted grid
+    sqrt1_mu2 = jnp.sqrt(1.0 - mu_b**2)
+    sqrt1_x2  = jnp.sqrt(1.0 - x_b**2)
+    cosphi    = jnp.cos(phi_b)
+    cos2phi   = jnp.cos(2 * phi_b)
+
+    # Basis functions on broadcasted grid (each is at most (Nx, Nmu, Nphi) via broadcasting)
+    b000 = 1.0 / (8 * jnp.pi)
+    b110 = (-3 * jnp.sqrt(3) * x_b) / (8 * jnp.pi)
+    b220 = (5 * jnp.sqrt(5) / (16 * jnp.pi)) * (-1.0 + 3.0 * x_b**2)
+    b202 = (5 * jnp.sqrt(5) / (16 * jnp.pi)) * (-1.0 + 3.0 * mu_b**2)
+    b022 = (5 * jnp.sqrt(5) / (32 * jnp.pi)) * (
+        (-1.0 + 3.0 * mu_b**2) * (-1.0 + 3.0 * x_b**2) +
+        12.0 * mu_b * sqrt1_mu2 * x_b * sqrt1_x2 * cosphi +
+        3.0 * (1.0 - mu_b**2) * (1.0 - x_b**2) * cos2phi
+    )
+    b112 = (3 * jnp.sqrt(2.5) / (8 * jnp.pi)) * (
+        jnp.sqrt(3) * (-1.0 + 3.0 * mu_b**2) * x_b +
+        3.0 * jnp.sqrt(3) * mu_b * sqrt1_mu2 * sqrt1_x2 * cosphi
+    )
+    b222 = (25 * jnp.sqrt(70) * (
+        1 - 3 * mu_b**2 * x_b**2
+        - 3 * mu_b * x_b * sqrt1_mu2 * sqrt1_x2 * cosphi
+        - 1.5 * (1 - mu_b**2) * (1 - x_b**2) * (1 - cos2phi)
+    )) / (112 * jnp.pi)
+
+    # Stack basis functions: (7, Nx, Nmu, Nphi) — but each was built from
+    # broadcasted 1D arrays, so this is the ONLY 4D array and it's just the
+    # basis, not the bispectrum × basis × weights
+
+    basis = jnp.stack(list(map(lambda x: jnp.broadcast_to(x, (num_points,)*3), [b000, b110, b220, b202, b022, b112, b222])))  # (7, Nx, Nmu, Nphi)
+    
+    def pk_interp(k):
+        """
+        Interpolate the power spectrum in log-log space.
+
+        Parameters
+        ----------
+        k : float or jnp.ndarray
+            Wavenumber(s) at which to evaluate P(k).
+
+        Returns
+        -------
+        float or jnp.ndarray
+            Power spectrum value(s) P(k), obtained by linear interpolation
+            of log10(P) vs log10(k) and exponentiating back.
+        """
+        return 10**jnp.interp(jnp.log10(k), log_km, log_pkm)
+
+    def process_pair(k1k2):
+        """
+        Compute the 7 Sugiyama coefficients for a single (k1, k2) triangle.
+
+        This inner function is vmapped over all triangle pairs by the caller.
+        It evaluates the bispectrum on the broadcasted angular grid, multiplies
+        by each of the 7 basis functions, and performs the 3D integral
+        sequentially (φ → μ → x) to minimize intermediate memory usage.
+
+        Parameters
+        ----------
+        k1k2 : jnp.ndarray
+            Array of shape (2,) containing [k1, k2] for one triangle.
+
+        Returns
+        -------
+        coeffs : jnp.ndarray
+            Array of shape (7,) containing the unnormalized integrals
+            ∫∫∫ B(k1, k2, x, μ, φ) · b_{l1 l2 L}(x, μ, φ) dx dμ dφ
+            for each of the 7 Sugiyama basis functions.
+        """
+        k1, k2 = k1k2
+
+        # Bispectrum on broadcasted grid: (Nx, Nmu, Nphi)
+        B = bkeff_sugiyama(
+            k1, k2, x_b, mu_b, phi_b,
+            cosm_par, pk_interp, log_km, log_pkm, af, None, 1.0, geo_expansion
+        )
+
+        # Multiply by basis: (7, Nx, Nmu, Nphi)
+        # This is one 4D array, but it's the minimum you need
+        integrand = B[None, :, :, :] * basis  # (7, Nx, Nmu, Nphi)
+
+        # --- Sequential integration (guaranteed memory-efficient) ---
+
+        # Step 1: integrate over φ (axis=3)
+        # integrand * wphi broadcasts wphi to (1, 1, 1, Nphi)
+        int_phi = jnp.sum(integrand * wphi[None, None, None, :], axis=3)
+        # → shape: (7, Nx, Nmu)
+
+        # Step 2: integrate over μ (axis=2)
+        int_mu = jnp.sum(int_phi * wmu[None, None, :], axis=2)
+        # → shape: (7, Nx)
+
+        # Step 3: integrate over x (axis=1)
+        coeffs = jnp.sum(int_mu * wx[None, :], axis=1)
+        # → shape: (7,)
+
+        return coeffs
+
+    all_coeffs = jax.vmap(process_pair)(k1k2_pairs)  # (N_pairs, 7)
+
+    # Normalization
+    H_factors = jnp.array([
+        1.0, -1.0/jnp.sqrt(3.0), 1.0/jnp.sqrt(5.0),
+        1.0/jnp.sqrt(5.0), 1.0/jnp.sqrt(5.0),
+        jnp.sqrt(2.0/15.0), -2.0 / jnp.sqrt(70.0)
+    ])
+
+    return (all_coeffs * H_factors).T
+
+    
 def bk_sugiyama_multip(k1, k2, kp, pk, cosm_par, redshift, num_points=10, fi_vals=F_VALS_FULL,
                        geo_expansion = 'poly'):
     """
